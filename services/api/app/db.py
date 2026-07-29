@@ -53,6 +53,8 @@ async def _upgrade_sqlite_schema(connection) -> None:
         ("workflow", "TEXT NOT NULL DEFAULT 'standard'"),
         ("current_cycle", "INTEGER NOT NULL DEFAULT 1"),
         ("max_cycles", "INTEGER NOT NULL DEFAULT 1"),
+        ("skills", "JSON NOT NULL DEFAULT '[]'"),
+        ("planner_backend", "TEXT NOT NULL DEFAULT 'deterministic'"),
     ):
         if "runs" in table_names and column not in run_columns:
             await connection.execute(text(f"ALTER TABLE runs ADD COLUMN {column} {definition}"))

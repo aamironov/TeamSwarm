@@ -140,6 +140,27 @@ run-scoped context manifest. When a delivery cycle repeats, a bounded structured
 handoff summary carries forward prior role outputs rather than replaying the
 whole transcript.
 
+## Skills and planning agents
+
+TeamSwarm discovers portable Agent Skills from `TEAMSWARM_SKILL_ROOTS` using
+the open `SKILL.md` format. The API advertises metadata at `GET /skills`; a run
+selects skills by name, snapshots their instructions and hashes, and includes
+the selected instructions in the context optimizer for every worker. Bundled
+skill scripts are never executed implicitly, and `allowed-tools` is metadata
+rather than an authorization grant.
+
+Set `planner_backend` on `POST /runs` to choose how tasks are created:
+
+- `deterministic` uses the existing validated planner.
+- `provider-agent` asks TeamSwarm's configured strong model for a structured,
+  bounded task DAG and validates IDs, dependencies, cycles, and contracts.
+- `autogen` uses Microsoft's open-source AutoGen `AssistantAgent` as the
+  planning-only lead and then hands its validated DAG to TeamSwarm.
+
+Install the optional AutoGen backend with `uv sync --extra autogen`. AutoGen is
+used only to generate tasks; TeamSwarm remains responsible for skills, budgets,
+permissions, scheduling, context sharing, execution, and stable Git versions.
+
 ## Run a local GPU model with SGLang
 
 SGLang is an optional high-throughput local serving backend. It is most useful

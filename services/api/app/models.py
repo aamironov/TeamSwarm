@@ -18,6 +18,8 @@ class RunRecord(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     trace: Mapped[list[dict]] = mapped_column(JSON, default=list)
     attachments: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    skills: Mapped[list[dict]] = mapped_column(JSON, default=list)
+    planner_backend: Mapped[str] = mapped_column(String(40), default="deterministic")
     workflow: Mapped[str] = mapped_column(String(40), default="standard")
     current_cycle: Mapped[int] = mapped_column(Integer, default=1)
     max_cycles: Mapped[int] = mapped_column(Integer, default=1)

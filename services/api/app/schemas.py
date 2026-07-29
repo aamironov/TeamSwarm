@@ -38,6 +38,8 @@ class RunCreate(BaseModel):
     prompt_variants: list[str] = Field(default_factory=list, max_length=3)
     workflow: Literal["standard", "delivery_cycle"] = "standard"
     max_cycles: int = Field(default=2, ge=1, le=3)
+    skills: list[str] = Field(default_factory=list, max_length=8)
+    planner_backend: Literal["deterministic", "provider-agent", "autogen"] = "deterministic"
 
 
 class TaskView(BaseModel):
@@ -113,6 +115,13 @@ class AvailableModel(BaseModel):
 class ModelCatalog(BaseModel):
     active_provider: str
     models: list[AvailableModel]
+
+
+class SkillView(BaseModel):
+    name: str
+    description: str
+    content_hash: str
+    allowed_tools: list[str] = Field(default_factory=list)
 
 
 class ModelTokenUsage(BaseModel):

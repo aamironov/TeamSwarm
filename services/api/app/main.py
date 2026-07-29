@@ -19,10 +19,12 @@ from .schemas import (
     RunCreate,
     RunQueueView,
     RunView,
+    SkillView,
     TokenUsageWindow,
     TraceView,
     UsageSummary,
 )
+from .skills import SkillCatalog
 
 service = RunService()
 chat_service = ChatService()
@@ -55,6 +57,20 @@ async def get_models() -> ModelCatalog:
         active_provider=get_settings().provider_mode,
         models=[model.__dict__ for model in await get_model_catalog()],
     )
+
+
+@app.get("/skills", response_model=list[SkillView])
+async def get_skills() -> list[SkillView]:
+    skills = SkillCatalog(get_settings().skills_paths()).discover()
+    return [
+        SkillView(
+            name=skill.name,
+            description=skill.description,
+            content_hash=skill.content_hash,
+            allowed_tools=list(skill.allowed_tools),
+        )
+        for skill in skills
+    ]
 
 
 @app.get("/usage/last-24-hours", response_model=TokenUsageWindow)

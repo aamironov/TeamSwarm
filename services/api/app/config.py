@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     max_concurrent_tasks_per_profile: int = 2
     context_token_budget: int = 6_000
     project_context_roots: str = "."
+    skill_roots: str = "./skills"
     default_token_budget: int = 12_000
     default_cost_budget_usd: float = 2.0
     api_cors_origin: str = "http://localhost:3000"
@@ -68,6 +69,9 @@ class Settings(BaseSettings):
             Path(root.strip()).expanduser().resolve()
             for root in self.project_context_roots.split(",")
         ]
+
+    def skills_paths(self) -> list[Path]:
+        return [Path(root.strip()).expanduser().resolve() for root in self.skill_roots.split(",")]
 
 
 @lru_cache

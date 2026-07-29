@@ -33,6 +33,12 @@ h1 { font-size: clamp(2.5rem, 7vw, 4.8rem); line-height: .96; margin: 12px 0; }
 .usage-by-model span { color: #9eaece; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .muted { color: #9eaece; }
 label { display: block; margin-bottom: 9px; font-weight: 700; }
+.form-label { display: block; margin: 14px 0 9px; font-weight: 700; }
+.skill-picker { display: grid; gap: 8px; margin-bottom: 12px; }
+.skill-picker label { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 10px; border: 1px solid #2a3758; border-radius: 10px; font-weight: 400; }
+.skill-picker input { width: auto; margin-top: 3px; }
+.skill-picker span { display: grid; gap: 3px; }
+.skill-picker small { color: #9eaece; line-height: 1.35; }
 textarea { width: 100%; min-height: 130px; resize: vertical; border-radius: 10px; border: 1px solid #3c4b70; background: #0b1020; color: inherit; padding: 14px; font: inherit; }
 input, select { width: 100%; border-radius: 10px; border: 1px solid #3c4b70; background: #0b1020; color: inherit; padding: 10px 12px; font: inherit; }
 button { margin-top: 14px; padding: 11px 16px; border: 0; border-radius: 10px; background: #74d6bd; color: #06120f; font: inherit; font-weight: 800; cursor: pointer; }

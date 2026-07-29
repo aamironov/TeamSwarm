@@ -12,8 +12,15 @@ dependencies = [
   "httpx>=0.28",
   "openai>=2.0",
   "pydantic-settings>=2.6",
+  "pyyaml>=6.0",
   "sqlalchemy>=2.0",
   "temporalio>=1.13",
+]
+
+[project.optional-dependencies]
+autogen = [
+  "autogen-agentchat>=0.7",
+  "autogen-ext[openai]>=0.7",
 ]
 
 [dependency-groups]

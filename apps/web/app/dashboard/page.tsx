@@ -35,6 +35,7 @@ type Model = {
   profiles: string[];
 };
 type ModelCatalog = { active_provider: string; models: Model[] };
+type Skill = { name: string; description: string; content_hash: string; allowed_tools: string[] };
 type TokenUsageWindow = {
   input_tokens: number;
   output_tokens: number;
@@ -55,6 +56,10 @@ export default function Dashboard() {
   const [run, setRun] = useState<Run | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const [plannerBackend, setPlannerBackend] = useState<"deterministic" | "provider-agent" | "autogen">("deterministic");
+  const [workflow, setWorkflow] = useState<"standard" | "delivery_cycle">("delivery_cycle");
   const [usage24h, setUsage24h] = useState<TokenUsageWindow | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -78,13 +83,15 @@ export default function Dashboard() {
   useEffect(() => {
     let mounted = true;
     async function refreshDashboard() {
-      const [modelsResponse, usageResponse] = await Promise.all([
+      const [modelsResponse, usageResponse, skillsResponse] = await Promise.all([
         fetch(`${apiBase}/models`),
         fetch(`${apiBase}/usage/last-24-hours`),
+        fetch(`${apiBase}/skills`),
       ]);
       if (!mounted) return;
       if (modelsResponse.ok) setCatalog(await modelsResponse.json());
       if (usageResponse.ok) setUsage24h(await usageResponse.json());
+      if (skillsResponse.ok) setSkills(await skillsResponse.json());
     }
     void refreshDashboard();
     const timer = window.setInterval(() => void refreshDashboard(), 30_000);
@@ -144,8 +151,10 @@ export default function Dashboard() {
       body: JSON.stringify({
         objective,
         attachments: runAttachments,
-        workflow: "delivery_cycle",
+        workflow,
         max_cycles: 2,
+        skills: selectedSkills,
+        planner_backend: plannerBackend,
       }),
     });
     if (!response.ok) {
@@ -306,6 +315,40 @@ export default function Dashboard() {
           <label htmlFor="run-files">Attach text or source files</label>
           <input id="run-files" type="file" multiple accept=".txt,.md,.py,.ts,.tsx,.js,.jsx,.json,.yaml,.yml,.toml,.csv,.html,.css,.sql,.xml,.log" onChange={(event) => void readAttachments(event.target.files).then(setRunAttachments)} />
           {runAttachments.length > 0 && <p className="muted">Attached: {runAttachments.map((item) => item.filename).join(", ")}</p>}
+          <label htmlFor="workflow">Workflow</label>
+          <select id="workflow" value={workflow} onChange={(event) => {
+            const next = event.target.value as "standard" | "delivery_cycle";
+            setWorkflow(next);
+            if (next === "delivery_cycle") setPlannerBackend("deterministic");
+          }}>
+            <option value="delivery_cycle">Delivery cycle</option>
+            <option value="standard">Generated task graph</option>
+          </select>
+          <label htmlFor="planner-backend">Task planner</label>
+          <select id="planner-backend" value={plannerBackend} onChange={(event) => {
+            const next = event.target.value as "deterministic" | "provider-agent" | "autogen";
+            setPlannerBackend(next);
+            if (next !== "deterministic") setWorkflow("standard");
+          }}>
+            <option value="deterministic">Deterministic</option>
+            <option value="provider-agent">TeamSwarm planning agent</option>
+            <option value="autogen">Microsoft AutoGen planning agent</option>
+          </select>
+          {skills.length > 0 && <>
+            <span className="form-label">Skills</span>
+            <div className="skill-picker">
+              {skills.map((skill) => <label key={skill.name}>
+                <input
+                  type="checkbox"
+                  checked={selectedSkills.includes(skill.name)}
+                  onChange={(event) => setSelectedSkills((current) => event.target.checked
+                    ? [...current, skill.name]
+                    : current.filter((name) => name !== skill.name))}
+                />
+                <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+              </label>)}
+            </div>
+          </>}
           <button disabled={!objective.trim() || isActive}>{isActive ? "Running…" : "Start run"}</button>
         </form>
         {error && <p className="error">{error}</p>}
