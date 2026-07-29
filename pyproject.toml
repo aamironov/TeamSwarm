@@ -1,0 +1,36 @@
+[project]
+name = "teamswarm"
+version = "0.1.0"
+description = "Provider-neutral multi-agent orchestration MVP"
+readme = "MVP.md"
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite>=0.20",
+  "asyncpg>=0.29",
+  "fastapi[standard]>=0.117",
+  "greenlet>=3.1",
+  "httpx>=0.28",
+  "openai>=2.0",
+  "pydantic-settings>=2.6",
+  "sqlalchemy>=2.0",
+  "temporalio>=1.13",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "ruff>=0.9",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["services/api/tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]

@@ -1,0 +1,1 @@
+"""TeamSwarm FastAPI application."""

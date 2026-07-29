@@ -1,0 +1,16 @@
+- vars:
+    objective: "Given that the Checkout API returned HTTP 503 for five minutes after a deployment, summarize the incident in one sentence."
+    expected_output: "A concise summary that mentions the Checkout API or HTTP 503."
+  assert:
+    - type: javascript
+      value: "typeof output === 'string' && output.trim().length > 0"
+    - type: javascript
+      value: "output.toLowerCase().includes('checkout') || output.includes('503')"
+- vars:
+    objective: "Compare two deployment options and state one trade-off."
+    expected_output: "A concise comparison with a trade-off."
+  assert:
+    - type: javascript
+      value: "typeof output === 'string' && output.trim().length > 0"
+    - type: javascript
+      value: "['trade-off', 'tradeoff', 'advantage', 'disadvantage'].some((word) => output.toLowerCase().includes(word))"

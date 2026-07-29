@@ -1,0 +1,7 @@
+description: TeamSwarm baseline task-contract regression suite
+prompts:
+  - "You are a TeamSwarm specialist agent. Complete the bounded objective: {{objective}}\nExpected output: {{expected_output}}"
+providers:
+  - id: ollama:chat:llama3.2:3b
+  - id: ollama:chat:qwen3:8b
+tests: file://cases/baseline.yaml
