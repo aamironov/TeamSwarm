@@ -18,6 +18,11 @@ from services.api.app.schemas import Budget, RunCreate, SubtaskInput
 from services.api.app.version_control import VersionSnapshot
 
 
+class UnchangedVersionControl:
+    def snapshot(self, *, run_id: str, cycle: int) -> VersionSnapshot:
+        return VersionSnapshot("unchanged", "test-head", "Test workspace is unchanged.")
+
+
 @pytest_asyncio.fixture
 async def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIterator[None]:
     """Give each runtime test an isolated SQLite database and session factory."""
@@ -26,6 +31,7 @@ async def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path) -> AsyncIt
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(runtime, "SessionLocal", session_factory)
+    monkeypatch.setattr(runtime, "LocalGitVersionControl", UnchangedVersionControl)
     yield
     await engine.dispose()
 
