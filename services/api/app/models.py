@@ -1,7 +1,18 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -23,6 +34,8 @@ class RunRecord(Base):
     workflow: Mapped[str] = mapped_column(String(40), default="standard")
     current_cycle: Mapped[int] = mapped_column(Integer, default=1)
     max_cycles: Mapped[int] = mapped_column(Integer, default=1)
+    workspace_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    write_tools_approved: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -72,6 +85,66 @@ class VersionRecord(Base):
     )
 
 
+class WorkflowRevisionRecord(Base):
+    __tablename__ = "workflow_revisions"
+    __table_args__ = (UniqueConstraint("run_id", "revision", name="uq_workflow_revision"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    workflow_type: Mapped[str] = mapped_column(String(40))
+    iteration: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="active")
+    parent_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    task_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    reason: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+
+class ToolCallRecord(Base):
+    __tablename__ = "tool_calls"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "task_id",
+            "idempotency_key",
+            name="uq_tool_call_idempotency",
+        ),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    tool_name: Mapped[str] = mapped_column(String(120))
+    arguments_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(20))
+    result_excerpt: Mapped[str] = mapped_column(Text)
+    result_hash: Mapped[str] = mapped_column(String(64))
+    side_effect: Mapped[bool] = mapped_column(Boolean, default=False)
+    approval_state: Mapped[str] = mapped_column(String(20), default="not_required")
+    idempotency_key: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    rollback_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    rollback_status: Mapped[str] = mapped_column(String(20), default="not_required")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+
+class ApprovalRecord(Base):
+    __tablename__ = "approvals"
+    __table_args__ = (
+        UniqueConstraint("run_id", "workflow_revision", name="uq_workflow_approval"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    workflow_revision: Mapped[int] = mapped_column(Integer)
+    decision: Mapped[str] = mapped_column(String(20))
+    comment: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+
 class RunIdempotencyRecord(Base):
     __tablename__ = "run_idempotency"
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -89,6 +162,7 @@ class TaskRecord(Base):
     agent_role: Mapped[str] = mapped_column(String(40), default="general")
     model_override: Mapped[str | None] = mapped_column(String(160), nullable=True)
     cycle: Mapped[int] = mapped_column(Integer, default=1)
+    workflow_revision: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)

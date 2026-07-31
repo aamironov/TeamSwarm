@@ -55,6 +55,8 @@ async def _upgrade_sqlite_schema(connection) -> None:
         ("max_cycles", "INTEGER NOT NULL DEFAULT 1"),
         ("skills", "JSON NOT NULL DEFAULT '[]'"),
         ("planner_backend", "TEXT NOT NULL DEFAULT 'deterministic'"),
+        ("workspace_root", "TEXT"),
+        ("write_tools_approved", "BOOLEAN NOT NULL DEFAULT 0"),
     ):
         if "runs" in table_names and column not in run_columns:
             await connection.execute(text(f"ALTER TABLE runs ADD COLUMN {column} {definition}"))
@@ -64,6 +66,7 @@ async def _upgrade_sqlite_schema(connection) -> None:
         ("agent_role", "TEXT NOT NULL DEFAULT 'general'"),
         ("model_override", "TEXT"),
         ("cycle", "INTEGER NOT NULL DEFAULT 1"),
+        ("workflow_revision", "INTEGER NOT NULL DEFAULT 1"),
     ):
         if "tasks" in table_names and column not in task_columns:
             await connection.execute(text(f"ALTER TABLE tasks ADD COLUMN {column} {definition}"))

@@ -57,9 +57,12 @@ control plane yet.
 - One bounded prompt-quantification workflow: a parent prompt may fan out to at
   most three deterministically partitioned child prompts with a shared immutable
   context prefix and a required consolidation task.
-- A workflow-template roadmap for retry/fallback, review/repair, conditional
-  branching, map/reduce, bounded refinement loops, and human approval gates.
-- Tool Gateway interface with no external write tools enabled by default.
+- Immutable workflow revisions plus a bounded review/repair template; a roadmap
+  remains for conditional branching, map/reduce, bounded refinement loops, and
+  interactive human approval gates.
+- Capability-scoped local Tool Gateway with workspace containment, command
+  allowlisting, audit records, mutation idempotency, and explicit per-run write
+  approval.
 - Usage Metering and Subscription Accounting with reservation, settlement, and
   dimensions for tenant, subscription, project, run, task, agent, provider,
   model, token class, request count, cost estimate, and billing period.
@@ -84,9 +87,10 @@ control plane yet.
 - Live traffic experiments, causal effect estimation, and automated prompt
   promotion.
 - Autonomous self-improvement; the MVP may create a diagnostic report only.
-- User-facing human-review workflow and external side-effecting tools.
+- Interactive human-review pauses and non-workspace external side effects.
 - General workflow templates beyond the existing sequential, parallel,
-  retry/fallback, and bounded prompt-quantification paths.
+  retry/fallback, bounded prompt-quantification, delivery-cycle, and
+  review/repair paths.
 - Multi-region deployment and service decomposition. The MVP supports a
   database-backed worker pool; high-availability scheduling remains deferred.
 
@@ -141,6 +145,7 @@ POST   /runs                 create a run
 GET    /runs/{runId}         get run state and summary
 GET    /runs/{runId}/events  stream normalized events
 POST   /runs/{runId}/cancel  cancel outstanding work
+POST   /runs/{runId}/approval approve or reject a paused protected revision
 GET    /runs/{runId}/usage   retrieve dimensional usage and allowance summary
 GET    /runs/{runId}/trace   retrieve tasks, routing, grants, and validation
 GET    /runs/{runId}/queue   retrieve task queue claims and worker state

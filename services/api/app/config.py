@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     inline_worker_enabled: bool = True
     max_concurrent_tasks: int = 4
     max_concurrent_tasks_per_profile: int = 2
+    max_tool_calls_per_task: int = 8
+    tool_timeout_seconds: int = 120
+    max_tool_output_chars: int = 50_000
     context_token_budget: int = 6_000
     project_context_roots: str = "."
     skill_roots: str = "./skills"
@@ -72,6 +75,15 @@ class Settings(BaseSettings):
 
     def skills_paths(self) -> list[Path]:
         return [Path(root.strip()).expanduser().resolve() for root in self.skill_roots.split(",")]
+
+    def resolve_workspace(self, requested: str | None) -> Path:
+        roots = self.project_roots()
+        candidate = Path(requested).expanduser().resolve() if requested else roots[0]
+        if not any(candidate == root or candidate.is_relative_to(root) for root in roots):
+            raise ValueError("Workspace root is outside TEAMSWARM_PROJECT_CONTEXT_ROOTS.")
+        if not candidate.is_dir():
+            raise ValueError("Workspace root must be an existing directory.")
+        return candidate
 
 
 @lru_cache

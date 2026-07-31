@@ -43,7 +43,12 @@ type TokenUsageWindow = {
   by_model: Array<{ model: string; total_tokens: number }>;
 };
 type TraceEvent = { kind: string; message: string; task_id?: string | null; metadata: Record<string, string | number | boolean> };
-type Trace = { events: TraceEvent[] };
+type Trace = {
+  events: TraceEvent[];
+  workflow_revisions: Array<{ revision: number; status: string; reason: string; workflow_type: string }>;
+  tool_calls: Array<{ task_id: string; tool_name: string; status: string; approval_state: string; rollback_status: string; result_excerpt: string }>;
+  approvals: Array<{ workflow_revision: number; decision: string; comment: string }>;
+};
 type Project = { id: string; name: string; directory: string };
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; model?: string | null; context_hash?: string | null };
 type Chat = { id: string; project_id: string; title: string; messages: ChatMessage[] };
@@ -59,7 +64,13 @@ export default function Dashboard() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [plannerBackend, setPlannerBackend] = useState<"deterministic" | "provider-agent" | "autogen">("deterministic");
-  const [workflow, setWorkflow] = useState<"standard" | "delivery_cycle">("delivery_cycle");
+  type Workflow = "standard" | "delivery_cycle" | "review_repair" | "conditional" | "map_reduce" | "refinement" | "human_approval";
+  const [workflow, setWorkflow] = useState<Workflow>("delivery_cycle");
+  const [approveWriteTools, setApproveWriteTools] = useState(false);
+  const [conditionValue, setConditionValue] = useState(true);
+  const [trueBranch, setTrueBranch] = useState("Execute the true branch.");
+  const [falseBranch, setFalseBranch] = useState("Execute the false branch.");
+  const [mapItems, setMapItems] = useState("partition one\npartition two");
   const [usage24h, setUsage24h] = useState<TokenUsageWindow | null>(null);
   const [trace, setTrace] = useState<Trace | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -155,6 +166,16 @@ export default function Dashboard() {
         max_cycles: 2,
         skills: selectedSkills,
         planner_backend: plannerBackend,
+        workspace_root: projects.find((project) => project.id === selectedProjectId)?.directory,
+        approve_write_tools: approveWriteTools,
+        conditional: workflow === "conditional" ? {
+          condition: conditionValue,
+          if_true: trueBranch,
+          if_false: falseBranch,
+        } : undefined,
+        map_reduce: workflow === "map_reduce" ? {
+          items: mapItems.split("\n").map((item) => item.trim()).filter(Boolean),
+        } : undefined,
       }),
     });
     if (!response.ok) {
@@ -164,6 +185,21 @@ export default function Dashboard() {
     const nextRun: Run = await response.json();
     setRun(nextRun);
     setRunAttachments([]);
+  }
+
+  async function decideApproval(decision: "approve" | "reject") {
+    if (!run) return;
+    setError("");
+    const response = await fetch(`${apiBase}/runs/${run.id}/approval`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, comment: `${decision} from dashboard` }),
+    });
+    if (!response.ok) {
+      setError((await response.json()).detail ?? "Unable to record approval.");
+      return;
+    }
+    setRun(await response.json());
   }
 
   async function createProject(event: FormEvent<HTMLFormElement>) {
@@ -317,13 +353,33 @@ export default function Dashboard() {
           {runAttachments.length > 0 && <p className="muted">Attached: {runAttachments.map((item) => item.filename).join(", ")}</p>}
           <label htmlFor="workflow">Workflow</label>
           <select id="workflow" value={workflow} onChange={(event) => {
-            const next = event.target.value as "standard" | "delivery_cycle";
+            const next = event.target.value as Workflow;
             setWorkflow(next);
-            if (next === "delivery_cycle") setPlannerBackend("deterministic");
+            if (next !== "standard") setPlannerBackend("deterministic");
           }}>
             <option value="delivery_cycle">Delivery cycle</option>
+            <option value="review_repair">Review / repair loop</option>
+            <option value="conditional">Conditional branch</option>
+            <option value="map_reduce">Map / reduce</option>
+            <option value="refinement">Bounded refinement</option>
+            <option value="human_approval">Human approval gate</option>
             <option value="standard">Generated task graph</option>
           </select>
+          {workflow === "conditional" && <div className="workflow-config">
+            <label>
+              Condition value
+              <select value={conditionValue ? "true" : "false"} onChange={(event) => setConditionValue(event.target.value === "true")}>
+                <option value="true">True</option>
+                <option value="false">False</option>
+              </select>
+            </label>
+            <label>True branch<input value={trueBranch} onChange={(event) => setTrueBranch(event.target.value)} /></label>
+            <label>False branch<input value={falseBranch} onChange={(event) => setFalseBranch(event.target.value)} /></label>
+          </div>}
+          {workflow === "map_reduce" && <label>
+            Map partitions, one per line
+            <textarea value={mapItems} onChange={(event) => setMapItems(event.target.value)} />
+          </label>}
           <label htmlFor="planner-backend">Task planner</label>
           <select id="planner-backend" value={plannerBackend} onChange={(event) => {
             const next = event.target.value as "deterministic" | "provider-agent" | "autogen";
@@ -349,6 +405,15 @@ export default function Dashboard() {
               </label>)}
             </div>
           </>}
+          <label className="approval-toggle">
+            <input
+              type="checkbox"
+              checked={approveWriteTools}
+              onChange={(event) => setApproveWriteTools(event.target.checked)}
+            />
+            <span>Approve workspace write tools for this run</span>
+          </label>
+          <p className="muted">Tools are restricted to the selected project directory and every call is recorded. Select the workspace-coding skill to advertise those tools.</p>
           <button disabled={!objective.trim() || isActive}>{isActive ? "Running…" : "Start run"}</button>
         </form>
         {error && <p className="error">{error}</p>}
@@ -356,6 +421,11 @@ export default function Dashboard() {
       {run && (
         <section className="panel result">
           <div className="run-header"><span>Run {run.id.slice(0, 8)}</span><strong data-status={run.status}>{run.status}</strong></div>
+          {run.status === "waiting_approval" && <div className="approval-actions">
+            <p>This run is paused. Review the proposal and tool scope before deciding.</p>
+            <button type="button" onClick={() => void decideApproval("approve")}>Approve and resume</button>
+            <button className="danger" type="button" onClick={() => void decideApproval("reject")}>Reject</button>
+          </div>}
           <h2>Task graph</h2>
           <div className="task-graph">
             {run.tasks.map((task, index) => {
@@ -370,6 +440,9 @@ export default function Dashboard() {
           {usage && <p className="usage">Tokens: {usage.consumed_tokens.toLocaleString()} / {usage.token_limit.toLocaleString()} · Estimated cost: ${usage.consumed_cost_usd.toFixed(4)} / ${usage.cost_limit_usd.toFixed(2)}</p>}
           {run.final_output && <><h2>Consolidated result</h2><pre className="final">{run.final_output}</pre></>}
           {trace && <><h2>Decision timeline</h2><div className="timeline">{trace.events.filter((event) => ["task_claimed", "model_routed", "task_settled", "capability_denied", "task_recovered"].includes(event.kind)).map((event, index) => <p key={`${event.kind}-${index}`}><strong>{event.kind.replaceAll("_", " ")}</strong> {event.message}</p>)}</div></>}
+          {(trace?.workflow_revisions?.length ?? 0) > 0 && <><h2>Workflow revisions</h2><div className="timeline">{trace!.workflow_revisions.map((revision) => <p key={revision.revision}><strong>Revision {revision.revision} · {revision.status}</strong> {revision.reason}</p>)}</div></>}
+          {(trace?.tool_calls?.length ?? 0) > 0 && <><h2>Tool calls</h2><div className="timeline">{trace!.tool_calls.map((call, index) => <p key={`${call.task_id}-${index}`}><strong>{call.tool_name} · {call.status} · rollback {call.rollback_status}</strong> {call.result_excerpt}</p>)}</div></>}
+          {(trace?.approvals?.length ?? 0) > 0 && <><h2>Approval decisions</h2><div className="timeline">{trace!.approvals.map((approval, index) => <p key={`${approval.workflow_revision}-${index}`}><strong>Revision {approval.workflow_revision} · {approval.decision}</strong> {approval.comment}</p>)}</div></>}
           {run.error && <p className="error">{run.error}</p>}
         </section>
       )}

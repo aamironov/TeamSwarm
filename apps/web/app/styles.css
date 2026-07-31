@@ -39,6 +39,12 @@ label { display: block; margin-bottom: 9px; font-weight: 700; }
 .skill-picker input { width: auto; margin-top: 3px; }
 .skill-picker span { display: grid; gap: 3px; }
 .skill-picker small { color: #9eaece; line-height: 1.35; }
+.approval-toggle { display: flex; align-items: center; gap: 9px; margin-top: 14px; }
+.approval-toggle input { width: auto; }
+.workflow-config { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.approval-actions { margin: 16px 0; padding: 14px; border: 1px solid #c99b4d; border-radius: 10px; background: #322511; }
+.approval-actions button { margin-right: 9px; }
+.approval-actions .danger { background: #733b43; color: #ffe5e8; }
 textarea { width: 100%; min-height: 130px; resize: vertical; border-radius: 10px; border: 1px solid #3c4b70; background: #0b1020; color: inherit; padding: 14px; font: inherit; }
 input, select { width: 100%; border-radius: 10px; border: 1px solid #3c4b70; background: #0b1020; color: inherit; padding: 10px 12px; font: inherit; }
 button { margin-top: 14px; padding: 11px 16px; border: 0; border-radius: 10px; background: #74d6bd; color: #06120f; font: inherit; font-weight: 800; cursor: pointer; }

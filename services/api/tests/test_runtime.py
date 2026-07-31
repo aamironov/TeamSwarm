@@ -1,4 +1,5 @@
 import asyncio
+import subprocess
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -14,12 +15,21 @@ from services.api.app.db import Base
 from services.api.app.models import QueueItemRecord, TaskCapabilityRecord, TaskRecord
 from services.api.app.providers import MockProvider, ModelProvider, ProviderResult
 from services.api.app.runtime import RunService
-from services.api.app.schemas import Budget, RunCreate, SubtaskInput
+from services.api.app.schemas import (
+    ApprovalInput,
+    Budget,
+    ConditionalWorkflowInput,
+    MapReduceWorkflowInput,
+    RunCreate,
+    SubtaskInput,
+)
 from services.api.app.version_control import VersionSnapshot
 
 
 class UnchangedVersionControl:
-    def snapshot(self, *, run_id: str, cycle: int) -> VersionSnapshot:
+    def snapshot(
+        self, *, run_id: str, cycle: int, workspace_root: str | None = None
+    ) -> VersionSnapshot:
         return VersionSnapshot("unchanged", "test-head", "Test workspace is unchanged.")
 
 
@@ -98,11 +108,149 @@ class DeliveryCycleProvider(ModelProvider):
         return ProviderResult(text, 10, 5, "internally_metered")
 
 
+class ReviewRepairToolProvider(ModelProvider):
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        if "Role: builder" in prompt:
+            text = (
+                "Builder changed the workspace."
+                if "Tool interaction transcript:" in prompt
+                else 'TOOL_CALL: {"name":"workspace.replace_text","arguments":'
+                '{"path":"feature.txt","old":"bad","new":"better"},'
+                '"idempotency_key":"builder-fix"}'
+            )
+        elif "Role: repairer" in prompt:
+            text = (
+                "Repairer addressed the review finding."
+                if "Tool interaction transcript:" in prompt
+                else 'TOOL_CALL: {"name":"workspace.replace_text","arguments":'
+                '{"path":"feature.txt","old":"better","new":"good"},'
+                '"idempotency_key":"repair-fix"}'
+            )
+        elif "Role: reviewer" in prompt and "Workflow revision: 1" in prompt:
+            if "Agent requested workspace.run_command" in prompt:
+                text = "Concrete issue remains.\nREPAIR_REQUIRED: yes"
+            elif "Tool interaction transcript:" in prompt:
+                text = (
+                    'TOOL_CALL: {"name":"workspace.run_command",'
+                    '"arguments":{"command":["git","diff","--check"]}}'
+                )
+            else:
+                text = (
+                    'TOOL_CALL: {"name":"workspace.read_file",'
+                    '"arguments":{"path":"feature.txt"}}'
+                )
+        elif "Role: reviewer" in prompt:
+            if "Agent requested workspace.run_command" in prompt:
+                text = "All criteria are satisfied.\nREPAIR_REQUIRED: no"
+            elif "Tool interaction transcript:" in prompt:
+                text = (
+                    'TOOL_CALL: {"name":"workspace.run_command",'
+                    '"arguments":{"command":["git","diff","--check"]}}'
+                )
+            else:
+                text = (
+                    'TOOL_CALL: {"name":"workspace.read_file",'
+                    '"arguments":{"path":"feature.txt"}}'
+                )
+        else:
+            text = "completed"
+        return ProviderResult(text, 10, 5, "internally_metered")
+
+
+class RepeatedWriteProvider(ModelProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        self.calls += 1
+        if self.calls <= 2:
+            text = (
+                'TOOL_CALL: {"name":"workspace.replace_text","arguments":'
+                '{"path":"feature.txt","old":"bad","new":"good"},'
+                '"idempotency_key":"same-write"}'
+            )
+        else:
+            text = "Workspace edit completed."
+        return ProviderResult(text, 10, 5, "internally_metered")
+
+
+class MissingReviewMarkerProvider(ModelProvider):
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        return ProviderResult(
+            "Work completed without a decision marker.", 10, 5, "internally_metered"
+        )
+
+
+class TypedWorkflowProvider(ModelProvider):
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+        self.refinement_evaluations = 0
+
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        self.prompts.append(prompt)
+        if "Role: refinement_evaluator" in prompt:
+            self.refinement_evaluations += 1
+            marker = "yes" if self.refinement_evaluations == 2 else "no"
+            text = f"REFINEMENT_COMPLETE: {marker}"
+        else:
+            text = "typed workflow task completed"
+        return ProviderResult(text, 10, 5, "internally_metered")
+
+
+class HumanApprovalToolProvider(ModelProvider):
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        if "Role: approval_proposer" in prompt:
+            text = "Proposal: replace pending with approved and verify the file."
+        elif "Role: approved_executor" in prompt:
+            text = (
+                "Approved execution completed."
+                if "Tool interaction transcript:" in prompt
+                else 'TOOL_CALL: {"name":"workspace.replace_text","arguments":'
+                '{"path":"approval.txt","old":"pending","new":"approved"},'
+                '"idempotency_key":"approved-execution"}'
+            )
+        elif "Role: approval_verifier" in prompt:
+            text = (
+                "Approved scope and result verified."
+                if "Tool interaction transcript:" in prompt
+                else 'TOOL_CALL: {"name":"workspace.read_file",'
+                '"arguments":{"path":"approval.txt"}}'
+            )
+        else:
+            text = "completed"
+        return ProviderResult(text, 10, 5, "internally_metered")
+
+
+class WriteThenFailProvider(ModelProvider):
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        text = (
+            ""
+            if "Tool interaction transcript:" in prompt
+            else 'TOOL_CALL: {"name":"workspace.replace_text","arguments":'
+            '{"path":"rollback.txt","old":"before","new":"temporary"},'
+            '"idempotency_key":"temporary-write"}'
+        )
+        return ProviderResult(text, 10, 5, "internally_metered")
+
+
+class EndlessToolProvider(ModelProvider):
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        return ProviderResult(
+            'TOOL_CALL: {"name":"workspace.read_file",'
+            '"arguments":{"path":"loop.txt"}}',
+            10,
+            5,
+            "internally_metered",
+        )
+
+
 class RecordingVersionControl:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int]] = []
 
-    def snapshot(self, *, run_id: str, cycle: int) -> VersionSnapshot:
+    def snapshot(
+        self, *, run_id: str, cycle: int, workspace_root: str | None = None
+    ) -> VersionSnapshot:
         self.calls.append((run_id, cycle))
         return VersionSnapshot("created", "abc123", "Saved stable delivery cycle 2 to local Git.")
 
@@ -225,6 +373,459 @@ async def test_delivery_cycle_saves_an_accepted_cycle_to_local_git(
         }
     ]
     assert any(event.kind == "stable_version_saved" for event in trace.events)
+
+
+@pytest.mark.asyncio
+async def test_review_repair_workflow_edits_reviews_repairs_and_versions_workspace(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "feature.txt").write_text("bad", encoding="utf-8")
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=workspace,
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "workspace-coding"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: workspace-coding\n"
+        "description: Safely edit and test a workspace.\n"
+        "allowed-tools: workspace.read_file workspace.replace_text workspace.run_command\n"
+        "---\n"
+        "Inspect, edit, and verify the workspace.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    versions = RecordingVersionControl()
+    service = RunService(
+        provider=ReviewRepairToolProvider(),
+        version_control=versions,
+    )
+
+    created = await service.create(
+        RunCreate(
+            objective="Make feature.txt say good.",
+            workflow="review_repair",
+            max_cycles=2,
+            workspace_root=str(workspace),
+            skills=["workspace-coding"],
+            approve_write_tools=True,
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+    replay = await service.replay(created.id)
+
+    assert completed.status == "succeeded"
+    assert len(completed.tasks) == 4
+    assert (workspace / "feature.txt").read_text(encoding="utf-8") == "good"
+    assert [revision["status"] for revision in trace.workflow_revisions] == [
+        "superseded",
+        "accepted",
+    ]
+    assert [call["status"] for call in trace.tool_calls] == ["succeeded"] * 6
+    write_calls = [call for call in trace.tool_calls if call["side_effect"]]
+    assert [call["approval_state"] for call in write_calls] == ["approved", "approved"]
+    assert [call["rollback_status"] for call in write_calls] == ["committed", "committed"]
+    assert versions.calls == [(created.id, 2)]
+    assert any(event.kind == "repair_requested" for event in trace.events)
+    assert any(event.kind == "review_accepted" for event in trace.events)
+    assert len(replay.workflow_revisions) == 2
+    assert len(replay.tool_calls) == 6
+    assert [call["tool_name"] for call in trace.tool_calls].count(
+        "workspace.run_command"
+    ) == 2
+    assert all(
+        any(item["source"] == "agent_skill" for item in manifest["selected"])
+        for manifest in trace.context_manifests
+    )
+
+
+@pytest.mark.asyncio
+async def test_mutating_tool_idempotency_prevents_duplicate_side_effects(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "feature.txt").write_text("bad", encoding="utf-8")
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "workspace-coding"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: workspace-coding\n"
+        "description: Safely edit a workspace.\n"
+        "allowed-tools: workspace.replace_text\n"
+        "---\n"
+        "Edit the workspace.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=RepeatedWriteProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Make feature.txt say good.",
+            workspace_root=str(workspace),
+            skills=["workspace-coding"],
+            approve_write_tools=True,
+        )
+    )
+    await _wait_for_run(service, created.id)
+    trace = await service.trace(created.id)
+
+    assert (workspace / "feature.txt").read_text(encoding="utf-8") == "good"
+    assert len(trace.tool_calls) == 1
+    assert any(event.kind == "tool_replayed" for event in trace.events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_denies_unapproved_workspace_mutation(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "feature.txt").write_text("bad", encoding="utf-8")
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "workspace-coding"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: workspace-coding\n"
+        "description: Safely edit a workspace.\n"
+        "allowed-tools: workspace.replace_text\n"
+        "---\n"
+        "Edit the workspace.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=RepeatedWriteProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Make feature.txt say good.",
+            workspace_root=str(workspace),
+            skills=["workspace-coding"],
+            approve_write_tools=False,
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "failed"
+    assert (workspace / "feature.txt").read_text(encoding="utf-8") == "bad"
+    assert trace.tool_calls[0]["status"] == "denied"
+    assert trace.tool_calls[0]["approval_state"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_failed_run_rolls_back_its_own_workspace_mutation(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "rollback.txt").write_text("before", encoding="utf-8")
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "workspace-coding"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: workspace-coding\n"
+        "description: Safely edit a workspace.\n"
+        "allowed-tools: workspace.replace_text\n"
+        "---\n"
+        "Edit the workspace.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=WriteThenFailProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Make a change that will fail validation.",
+            workspace_root=str(workspace),
+            skills=["workspace-coding"],
+            approve_write_tools=True,
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "failed"
+    assert (workspace / "rollback.txt").read_text(encoding="utf-8") == "before"
+    assert trace.tool_calls[0]["rollback_status"] == "succeeded"
+    assert any(event.kind == "tool_rollback_succeeded" for event in trace.events)
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_stops_at_declared_call_limit(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    (tmp_path / "loop.txt").write_text("loop", encoding="utf-8")
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "reader"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: reader\n"
+        "description: Read workspace files.\n"
+        "allowed-tools: workspace.read_file\n"
+        "---\n"
+        "Read relevant files.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+        max_tool_calls_per_task=2,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=EndlessToolProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Inspect the looping file.",
+            workspace_root=str(tmp_path),
+            skills=["reader"],
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "failed"
+    assert len(trace.tool_calls) == 2
+    assert "2-call tool limit" in (completed.tasks[0].error or "")
+
+
+@pytest.mark.asyncio
+async def test_review_repair_requires_an_explicit_reviewer_marker(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    settings = Settings(project_context_roots=str(tmp_path), max_task_attempts=1)
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=MissingReviewMarkerProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Review this outcome.",
+            workflow="review_repair",
+            max_cycles=1,
+            workspace_root=str(tmp_path),
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "failed"
+    assert trace.workflow_revisions[0]["status"] == "failed"
+    assert any(event.kind == "review_invalid" for event in trace.events)
+
+
+@pytest.mark.asyncio
+async def test_conditional_records_selected_and_skipped_branch(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    settings = Settings(project_context_roots=str(tmp_path))
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=TypedWorkflowProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Choose a release action.",
+            workflow="conditional",
+            conditional=ConditionalWorkflowInput(
+                condition=True,
+                if_true="Deploy the release.",
+                if_false="Hold the release.",
+            ),
+            workspace_root=str(tmp_path),
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "succeeded"
+    assert len(completed.tasks) == 1
+    assert "selected the true branch" in trace.workflow_revisions[0]["reason"]
+    assert "false branch was skipped" in trace.workflow_revisions[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_map_reduce_grants_all_partitions_to_one_reducer(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    settings = Settings(project_context_roots=str(tmp_path))
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    provider = TypedWorkflowProvider()
+    service = RunService(provider=provider)
+    created = await service.create(
+        RunCreate(
+            objective="Assess the launch.",
+            workflow="map_reduce",
+            map_reduce=MapReduceWorkflowInput(items=["cost", "quality", "delivery"]),
+            workspace_root=str(tmp_path),
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    reducer_prompt = next(prompt for prompt in provider.prompts if "Role: reducer" in prompt)
+
+    assert completed.status == "succeeded"
+    assert [task.agent_role for task in completed.tasks].count("map") == 3
+    assert reducer_prompt.count("Authorized upstream result") == 3
+
+
+@pytest.mark.asyncio
+async def test_refinement_appends_bounded_revision_until_evaluator_accepts(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    settings = Settings(project_context_roots=str(tmp_path))
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    versions = RecordingVersionControl()
+    service = RunService(
+        provider=TypedWorkflowProvider(),
+        version_control=versions,
+    )
+    created = await service.create(
+        RunCreate(
+            objective="Improve the implementation.",
+            workflow="refinement",
+            max_cycles=2,
+            workspace_root=str(tmp_path),
+        )
+    )
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "succeeded"
+    assert len(completed.tasks) == 4
+    assert [revision["status"] for revision in trace.workflow_revisions] == [
+        "superseded",
+        "accepted",
+    ]
+    assert any(event.kind == "refinement_continued" for event in trace.events)
+    assert versions.calls == [(created.id, 2)]
+
+
+@pytest.mark.asyncio
+async def test_human_approval_pauses_then_executes_approved_write(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "approval.txt").write_text("pending", encoding="utf-8")
+    skill_root = tmp_path / "skills"
+    skill = skill_root / "workspace-coding"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\n"
+        "name: workspace-coding\n"
+        "description: Safely edit a workspace.\n"
+        "allowed-tools: workspace.read_file workspace.replace_text\n"
+        "---\n"
+        "Edit only after approval.",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        skill_roots=str(skill_root),
+        max_task_attempts=1,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    versions = RecordingVersionControl()
+    service = RunService(
+        provider=HumanApprovalToolProvider(),
+        version_control=versions,
+    )
+    created = await service.create(
+        RunCreate(
+            objective="Apply the protected approval change.",
+            workflow="human_approval",
+            workspace_root=str(workspace),
+            skills=["workspace-coding"],
+        )
+    )
+    await _wait_for_run(service, created.id)
+    waiting = await service.get(created.id)
+
+    assert waiting.status == "waiting_approval"
+    assert (workspace / "approval.txt").read_text(encoding="utf-8") == "pending"
+
+    resumed = await service.decide_approval(
+        created.id,
+        ApprovalInput(decision="approve", comment="Proceed with the bounded proposal."),
+    )
+    assert resumed.status == "running"
+    await _wait_for_run(service, created.id)
+    completed = await service.get(created.id)
+    trace = await service.trace(created.id)
+
+    assert completed.status == "succeeded"
+    assert (workspace / "approval.txt").read_text(encoding="utf-8") == "approved"
+    assert [revision["status"] for revision in trace.workflow_revisions] == [
+        "approved",
+        "accepted",
+    ]
+    assert trace.approvals[0]["decision"] == "approve"
+    assert any(event.kind == "approval_granted" for event in trace.events)
+    assert versions.calls == [(created.id, 2)]
+
+
+@pytest.mark.asyncio
+async def test_human_rejection_terminates_without_execution_revision(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    settings = Settings(project_context_roots=str(tmp_path))
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    service = RunService(provider=HumanApprovalToolProvider())
+    created = await service.create(
+        RunCreate(
+            objective="Prepare a protected operation.",
+            workflow="human_approval",
+            workspace_root=str(tmp_path),
+        )
+    )
+    await _wait_for_run(service, created.id)
+
+    rejected = await service.decide_approval(
+        created.id,
+        ApprovalInput(decision="reject", comment="Risk is not acceptable."),
+    )
+    trace = await service.trace(created.id)
+
+    assert rejected.status == "failed"
+    assert len(rejected.tasks) == 1
+    assert trace.workflow_revisions[0]["status"] == "rejected"
+    assert trace.approvals[0]["decision"] == "reject"
+    assert any(event.kind == "approval_rejected" for event in trace.events)
 
 
 @pytest.mark.asyncio

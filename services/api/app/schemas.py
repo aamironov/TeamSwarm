@@ -4,7 +4,9 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 TaskStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
-RunStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
+RunStatus = Literal[
+    "pending", "running", "waiting_approval", "succeeded", "failed", "cancelled"
+]
 QueueStatus = Literal["queued", "claimed", "completed", "failed", "cancelled"]
 
 
@@ -26,6 +28,16 @@ class PromptAttachmentInput(BaseModel):
     content: str = Field(min_length=1, max_length=100_000)
 
 
+class ConditionalWorkflowInput(BaseModel):
+    condition: bool
+    if_true: str = Field(min_length=3, max_length=8_000)
+    if_false: str = Field(min_length=3, max_length=8_000)
+
+
+class MapReduceWorkflowInput(BaseModel):
+    items: list[str] = Field(min_length=1, max_length=8)
+
+
 class RunCreate(BaseModel):
     objective: str = Field(min_length=3, max_length=20_000)
     subtasks: list[SubtaskInput] = Field(default_factory=list, max_length=3)
@@ -36,10 +48,27 @@ class RunCreate(BaseModel):
     priority: int = Field(default=0, ge=-100, le=100)
     attachments: list[PromptAttachmentInput] = Field(default_factory=list, max_length=8)
     prompt_variants: list[str] = Field(default_factory=list, max_length=3)
-    workflow: Literal["standard", "delivery_cycle"] = "standard"
+    workflow: Literal[
+        "standard",
+        "delivery_cycle",
+        "review_repair",
+        "conditional",
+        "map_reduce",
+        "refinement",
+        "human_approval",
+    ] = "standard"
     max_cycles: int = Field(default=2, ge=1, le=3)
     skills: list[str] = Field(default_factory=list, max_length=8)
     planner_backend: Literal["deterministic", "provider-agent", "autogen"] = "deterministic"
+    workspace_root: str | None = Field(default=None, max_length=2_000)
+    approve_write_tools: bool = False
+    conditional: ConditionalWorkflowInput | None = None
+    map_reduce: MapReduceWorkflowInput | None = None
+
+
+class ApprovalInput(BaseModel):
+    decision: Literal["approve", "reject"]
+    comment: str = Field(default="", max_length=2_000)
 
 
 class TaskView(BaseModel):
@@ -49,6 +78,7 @@ class TaskView(BaseModel):
     model_profile: Literal["fast", "strong"]
     agent_role: str = "general"
     model_override: str | None = None
+    workflow_revision: int = 1
     status: TaskStatus
     output: str | None = None
     error: str | None = None
@@ -92,6 +122,9 @@ class TraceView(BaseModel):
     events: list[TraceEvent]
     context_manifests: list[dict] = Field(default_factory=list)
     versions: list[dict[str, str | int | None]] = Field(default_factory=list)
+    workflow_revisions: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict] = Field(default_factory=list)
+    approvals: list[dict] = Field(default_factory=list)
 
 
 class UsageSummary(BaseModel):
@@ -170,6 +203,9 @@ class ReplayView(BaseModel):
     tasks: list[TaskView]
     artifacts: list[ArtifactView]
     evaluations: list[dict]
+    workflow_revisions: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict] = Field(default_factory=list)
+    approvals: list[dict] = Field(default_factory=list)
 
 
 class ProjectCreate(BaseModel):

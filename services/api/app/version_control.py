@@ -28,8 +28,15 @@ class LocalGitVersionControl:
     def __init__(self, workspace_root: Path | None = None) -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
 
-    def snapshot(self, *, run_id: str, cycle: int) -> VersionSnapshot:
-        root = self._repository_root()
+    def snapshot(
+        self,
+        *,
+        run_id: str,
+        cycle: int,
+        workspace_root: str | Path | None = None,
+    ) -> VersionSnapshot:
+        start = Path(workspace_root).resolve() if workspace_root else self.workspace_root
+        root = self._repository_root(start)
         if root is None:
             return VersionSnapshot("unavailable", None, "Local Git repository is not initialized.")
         if self._run(root, "status", "--porcelain").stdout.strip() == "":
@@ -57,8 +64,8 @@ class LocalGitVersionControl:
             "created", self._head(root), f"Saved stable delivery cycle {cycle} to local Git."
         )
 
-    def _repository_root(self) -> Path | None:
-        result = self._run(self.workspace_root, "rev-parse", "--show-toplevel")
+    def _repository_root(self, start: Path) -> Path | None:
+        result = self._run(start, "rev-parse", "--show-toplevel")
         if result.returncode != 0:
             return None
         return Path(result.stdout.strip())

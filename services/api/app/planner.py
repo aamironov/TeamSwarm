@@ -38,6 +38,20 @@ def build_plan(request: RunCreate) -> list[PlannedTask]:
                 "The delivery-cycle workflow accepts one prompt, not subtasks or variants."
             )
         return build_delivery_cycle_plan(request, cycle=1)
+    if request.workflow == "review_repair":
+        if request.prompt_variants or request.subtasks:
+            raise ValueError(
+                "The review/repair workflow accepts one prompt, not subtasks or variants."
+            )
+        return build_review_repair_plan(request, revision=1)
+    if request.workflow == "conditional":
+        return build_conditional_plan(request)
+    if request.workflow == "map_reduce":
+        return build_map_reduce_plan(request)
+    if request.workflow == "refinement":
+        return build_refinement_plan(request, revision=1)
+    if request.workflow == "human_approval":
+        return build_human_approval_plan(request, revision=1)
     if request.prompt_variants and request.subtasks:
         raise ValueError("Prompt quantification cannot be combined with explicit subtasks.")
     if request.prompt_variants:
@@ -143,6 +157,202 @@ def build_delivery_cycle_plan(request: RunCreate, cycle: int) -> list[PlannedTas
             )
         )
     return planned
+
+
+def build_review_repair_plan(request: RunCreate, revision: int) -> list[PlannedTask]:
+    """Build an immutable builder/reviewer or repairer/reviewer graph revision."""
+    worker_id = str(uuid4())
+    reviewer_id = str(uuid4())
+    if revision == 1:
+        role = "builder"
+        responsibility = (
+            "Implement the requested outcome in the approved workspace. Inspect relevant files, "
+            "make focused changes, and run verification using only granted tools."
+        )
+    else:
+        role = "repairer"
+        responsibility = (
+            "Apply only the actionable repairs identified by the prior reviewer, then rerun "
+            "focused verification using only granted tools."
+        )
+    worker = PlannedTask(
+        worker_id,
+        (
+            f"Shared user prompt:\n{request.objective}\n\nWorkflow revision: {revision}\n"
+            f"Role: {role}\nResponsibility: {responsibility}"
+        ),
+        [],
+        "strong",
+        "Changed files, tool evidence, verification results, and remaining risks.",
+        request.acceptance_checks,
+        request.priority,
+        agent_role=role,
+    )
+    reviewer = PlannedTask(
+        reviewer_id,
+        (
+            f"Shared user prompt:\n{request.objective}\n\nWorkflow revision: {revision}\n"
+            "Role: reviewer\nResponsibility: Inspect the workspace and upstream evidence. "
+            "Identify only concrete, actionable defects. Return a short review followed by "
+            "exactly one line: REPAIR_REQUIRED: yes or REPAIR_REQUIRED: no."
+        ),
+        [worker_id],
+        "strong",
+        "Evidence-based review and the required REPAIR_REQUIRED marker.",
+        ["non_empty"],
+        request.priority,
+        agent_role="reviewer",
+    )
+    return [worker, reviewer]
+
+
+def build_conditional_plan(request: RunCreate) -> list[PlannedTask]:
+    if request.conditional is None:
+        raise ValueError("The conditional workflow requires conditional configuration.")
+    selected = (
+        request.conditional.if_true
+        if request.conditional.condition
+        else request.conditional.if_false
+    )
+    branch = "true" if request.conditional.condition else "false"
+    return [
+        PlannedTask(
+            str(uuid4()),
+            (
+                f"Shared user prompt:\n{request.objective}\n\nRole: branch\n"
+                f"Selected deterministic branch: {branch}\nBranch objective: {selected}"
+            ),
+            [],
+            _profile_for(selected),
+            request.expected_output,
+            request.acceptance_checks,
+            request.priority,
+            agent_role="branch",
+        )
+    ]
+
+
+def build_map_reduce_plan(request: RunCreate) -> list[PlannedTask]:
+    if request.map_reduce is None:
+        raise ValueError("The map/reduce workflow requires map_reduce configuration.")
+    map_ids = [str(uuid4()) for _ in request.map_reduce.items]
+    tasks = [
+        PlannedTask(
+            task_id,
+            (
+                f"Shared user prompt:\n{request.objective}\n\nRole: map\n"
+                f"Independent partition: {item}"
+            ),
+            [],
+            _profile_for(item),
+            "A partition result with evidence and provenance.",
+            request.acceptance_checks,
+            request.priority,
+            agent_role="map",
+        )
+        for task_id, item in zip(map_ids, request.map_reduce.items, strict=True)
+    ]
+    tasks.append(
+        PlannedTask(
+            str(uuid4()),
+            (
+                f"Shared user prompt:\n{request.objective}\n\nRole: reducer\n"
+                "Consolidate every granted map result, deduplicate claims, retain conflicts, "
+                "and preserve partition-level provenance."
+            ),
+            map_ids,
+            "strong",
+            request.expected_output,
+            request.acceptance_checks,
+            request.priority,
+            agent_role="reducer",
+        )
+    )
+    return tasks
+
+
+def build_refinement_plan(request: RunCreate, revision: int) -> list[PlannedTask]:
+    refiner_id = str(uuid4())
+    evaluator_id = str(uuid4())
+    return [
+        PlannedTask(
+            refiner_id,
+            (
+                f"Shared user prompt:\n{request.objective}\n\nWorkflow revision: {revision}\n"
+                "Role: refiner\nCreate or improve the workspace outcome using prior revision "
+                "evidence and granted tools."
+            ),
+            [],
+            "strong",
+            "Refined artifact, changes, verification evidence, and remaining risks.",
+            request.acceptance_checks,
+            request.priority,
+            agent_role="refiner",
+        ),
+        PlannedTask(
+            evaluator_id,
+            (
+                f"Shared user prompt:\n{request.objective}\n\nWorkflow revision: {revision}\n"
+                "Role: refinement_evaluator\nEvaluate measurable completion. Return exactly "
+                "one line: REFINEMENT_COMPLETE: yes or REFINEMENT_COMPLETE: no."
+            ),
+            [refiner_id],
+            "strong",
+            "Evidence and the required REFINEMENT_COMPLETE marker.",
+            ["non_empty"],
+            request.priority,
+            agent_role="refinement_evaluator",
+        ),
+    ]
+
+
+def build_human_approval_plan(request: RunCreate, revision: int) -> list[PlannedTask]:
+    if revision == 1:
+        return [
+            PlannedTask(
+                str(uuid4()),
+                (
+                    f"Shared user prompt:\n{request.objective}\n\nRole: approval_proposer\n"
+                    "Inspect the workspace and propose the exact bounded change, risks, tools, "
+                    "and verification plan. Do not mutate the workspace."
+                ),
+                [],
+                "strong",
+                "A concrete execution proposal for human approval.",
+                request.acceptance_checks,
+                request.priority,
+                agent_role="approval_proposer",
+            )
+        ]
+    executor_id = str(uuid4())
+    return [
+        PlannedTask(
+            executor_id,
+            (
+                f"Shared user prompt:\n{request.objective}\n\nRole: approved_executor\n"
+                "Execute only the human-approved proposal using granted tools."
+            ),
+            [],
+            "strong",
+            "Approved changes and verification evidence.",
+            request.acceptance_checks,
+            request.priority,
+            agent_role="approved_executor",
+        ),
+        PlannedTask(
+            str(uuid4()),
+            (
+                f"Shared user prompt:\n{request.objective}\n\nRole: approval_verifier\n"
+                "Verify that execution stayed within the approved proposal and succeeded."
+            ),
+            [executor_id],
+            "strong",
+            "Verification of scope and outcome.",
+            request.acceptance_checks,
+            request.priority,
+            agent_role="approval_verifier",
+        ),
+    ]
 
 
 def _validate_acyclic(tasks: list[PlannedTask]) -> None:

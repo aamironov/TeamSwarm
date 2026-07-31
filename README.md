@@ -145,9 +145,9 @@ whole transcript.
 TeamSwarm discovers portable Agent Skills from `TEAMSWARM_SKILL_ROOTS` using
 the open `SKILL.md` format. The API advertises metadata at `GET /skills`; a run
 selects skills by name, snapshots their instructions and hashes, and includes
-the selected instructions in the context optimizer for every worker. Bundled
-skill scripts are never executed implicitly, and `allowed-tools` is metadata
-rather than an authorization grant.
+the selected instructions in the context optimizer for every worker. A skill's
+`allowed-tools` is intersected with the task role's runtime capabilities; it
+cannot grant a tool by itself. Bundled scripts are never executed implicitly.
 
 Set `planner_backend` on `POST /runs` to choose how tasks are created:
 
@@ -160,6 +160,57 @@ Set `planner_backend` on `POST /runs` to choose how tasks are created:
 Install the optional AutoGen backend with `uv sync --extra autogen`. AutoGen is
 used only to generate tasks; TeamSwarm remains responsible for skills, budgets,
 permissions, scheduling, context sharing, execution, and stable Git versions.
+
+## Execute skills with scoped workspace tools
+
+The bundled `workspace-coding` skill advertises the local Tool Gateway. Select a
+project directory, the skill, and the **Approve workspace write tools** option
+for a run that may edit files. Without that explicit run approval, write calls
+are denied even when the skill and task role declare them.
+
+The gateway currently provides bounded file listing and reading, exact text
+replacement, UTF-8 file writing, an allowlisted test/lint/build command runner,
+and read-only Git status. Paths are resolved beneath the selected workspace;
+`.git`, absolute paths, traversal, arbitrary shell commands, and shell control
+operators are rejected. Mutations require an idempotency key. Sanitized
+arguments, result hashes, approval state, and excerpts are persisted in trace
+and replay records. Before every approved mutation, TeamSwarm journals the
+target's preimage. If the run fails, is cancelled, or is rejected, mutations
+are rolled back in reverse order only when the file still matches the tool's
+recorded result hash; later external edits produce a rollback conflict instead
+of being overwritten.
+
+Use the `review_repair` workflow for executable work:
+
+```json
+{
+  "objective": "Implement the requested change and verify it.",
+  "workflow": "review_repair",
+  "max_cycles": 2,
+  "workspace_root": "/absolute/path/to/project",
+  "skills": ["workspace-coding"],
+  "approve_write_tools": true
+}
+```
+
+Revision 1 creates a builder and reviewer. A reviewer returning
+`REPAIR_REQUIRED: yes` appends one immutable repair/review revision, bounded by
+`max_cycles`; `REPAIR_REQUIRED: no` accepts the workflow and snapshots the
+selected workspace's local Git repository. Missing decision markers and
+unresolved findings at the revision limit fail clearly.
+
+Other typed templates use the same immutable revision and trace model:
+
+- `conditional` requires a boolean condition plus `if_true` and `if_false`
+  objectives, creates exactly the selected branch, and records the skipped one.
+- `map_reduce` requires one to eight declared items, executes map tasks in
+  parallel, and grants every partition artifact to one controlled reducer.
+- `refinement` repeats refiner/evaluator revisions until the evaluator returns
+  `REFINEMENT_COMPLETE: yes` or the configured revision limit is reached.
+- `human_approval` runs a read-only proposal revision and enters
+  `waiting_approval`. `POST /runs/{runId}/approval` with an `approve` decision
+  records the human decision, enables workspace writes, and appends the bounded
+  execution revision; `reject` terminates the run without execution.
 
 ## Run a local GPU model with SGLang
 

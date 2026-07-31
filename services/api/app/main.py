@@ -9,6 +9,7 @@ from .db import init_db
 from .providers import get_model_catalog
 from .runtime import RunService
 from .schemas import (
+    ApprovalInput,
     ChatCreate,
     ChatMessageInput,
     ChatView,
@@ -163,6 +164,16 @@ async def cancel_run(run_id: str) -> RunView:
         return await service.cancel(run_id)
     except KeyError as error:
         raise HTTPException(status_code=404, detail="Run not found") from error
+
+
+@app.post("/runs/{run_id}/approval", response_model=RunView)
+async def decide_run_approval(run_id: str, request: ApprovalInput) -> RunView:
+    try:
+        return await service.decide_approval(run_id, request)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Run not found") from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 @app.get("/runs/{run_id}/trace", response_model=TraceView)
