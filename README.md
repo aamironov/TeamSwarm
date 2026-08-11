@@ -177,8 +177,17 @@ version, source location, and workspace revision. Enable it with
 `TEAMSWARM_CODE_CONTEXT_ENABLED=true`; tune its bounded scan and result set with
 `TEAMSWARM_CODE_CONTEXT_MAX_FILES` and `TEAMSWARM_CODE_CONTEXT_MAX_ITEMS`. Each
 selected snippet still includes exact source text and line provenance in the
-context manifest. Learned embeddings, other languages, and learned reranking
-remain planned extensions.
+context manifest. This index applies only to runs with a selected
+`workspace_root`; project chat continues to use its bounded reference-file
+context. Learned embeddings, other languages, and learned reranking remain
+planned extensions.
+
+TeamSwarm renders every task prompt from a versioned, provider-neutral prompt
+specification. The trace records the prompt-spec, rendered-prompt, and context
+hashes, allowing a run to be reproduced without treating retrieved content as
+instructions. Context, attachments, handoffs, and tool output are always
+rendered as untrusted evidence; the prompt explicitly keeps tool and workspace
+authorization outside the model.
 
 ## Skills and planning agents
 
@@ -404,11 +413,19 @@ See [evals/README.md](evals/README.md) for the evaluation cases and output.
 | `TEAMSWARM_DATABASE_URL` | SQLAlchemy async database connection | local PostgreSQL Compose service |
 | `TEAMSWARM_PROVIDER_MODE` | `mock`, `ollama`, `sglang`, or `openai` | `mock` |
 | `TEAMSWARM_OLLAMA_BASE_URL` | Ollama server base URL | `http://localhost:11434` |
+| `TEAMSWARM_OLLAMA_THINK` | includes Ollama/Qwen visible reasoning output | `false` |
+| `TEAMSWARM_OLLAMA_MIN_FREE_MEMORY_GB` | minimum reclaimable RAM before any Ollama request | `0` (disabled) |
+| `TEAMSWARM_OLLAMA_MODEL_MEMORY_RESERVES_GB` | per-model RAM floors as `model=GiB` entries | unset |
 | `TEAMSWARM_SGLANG_BASE_URL` | SGLang server base URL | `http://localhost:30000` |
 | `TEAMSWARM_*_MODEL` | fast, strong, and fallback model selection | see `.env.example` |
 | `TEAMSWARM_INLINE_WORKER_ENABLED` | runs a development worker inside the API | `true` |
 | `TEAMSWARM_MAX_CONCURRENT_TASKS` | maximum tasks the local worker executes | `4` |
 | `TEAMSWARM_TASK_TIMEOUT_SECONDS` | per-task attempt timeout | `45` |
+| `TEAMSWARM_MAX_CONCURRENT_TASKS_PER_PROFILE` | local tasks permitted per routing profile | `2` |
+| `TEAMSWARM_CONTEXT_TOKEN_BUDGET` | maximum budget for an authorized context package | `6000` |
+| `TEAMSWARM_CODE_CONTEXT_ENABLED` | enables Python hybrid repository retrieval for workspace runs | `false` |
+| `TEAMSWARM_CODE_CONTEXT_MAX_FILES` | maximum Python files scanned to build an index | `500` |
+| `TEAMSWARM_CODE_CONTEXT_MAX_ITEMS` | maximum retrieved code chunks added before context budgeting | `6` |
 | `TEAMSWARM_PROJECT_CONTEXT_ROOTS` | allowed roots for project chat context | `.` |
 | `NEXT_PUBLIC_API_BASE_URL` | Web UI API URL | `http://localhost:8000` |
 
@@ -425,6 +442,14 @@ See [evals/README.md](evals/README.md) for the evaluation cases and output.
   `npm run dev` after changing it.
 - **Models are listed but unavailable:** the tag is configured but not pulled
   into the active Ollama instance. Run `ollama pull <model-tag>`.
+- **Ollama reports insufficient host memory:** lower or remove the applicable
+  `TEAMSWARM_OLLAMA_*_MEMORY_*` floor only if the model can safely coexist with
+  the other processes on the machine; otherwise choose a smaller model or free
+  memory. TeamSwarm refuses the request before sending it to Ollama.
+- **Repository snippets are absent from a run:** set a valid `workspace_root`
+  under `TEAMSWARM_PROJECT_CONTEXT_ROOTS`, enable
+  `TEAMSWARM_CODE_CONTEXT_ENABLED`, and ensure the workspace contains Python
+  symbols within the configured scan limit.
 
 ## MVP capabilities and boundaries
 
