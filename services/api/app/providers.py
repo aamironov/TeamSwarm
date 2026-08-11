@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -6,6 +7,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from .config import get_settings
+from .memory import available_memory_bytes
 
 
 @dataclass(frozen=True)
@@ -64,11 +66,14 @@ class OllamaProvider(ModelProvider):
         self,
         base_url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        available_memory: Callable[[], int | None] = available_memory_bytes,
     ) -> None:
         self.base_url = (base_url or get_settings().ollama_base_url).rstrip("/")
         self.transport = transport
+        self.available_memory = available_memory
 
     async def generate(self, prompt: str, model: str) -> ProviderResult:
+        self._ensure_memory_available(model)
         # The orchestrator owns task timeouts. Do not let HTTPX's shorter default
         # read timeout terminate a local model while it is loading or generating.
         async with httpx.AsyncClient(
@@ -78,7 +83,14 @@ class OllamaProvider(ModelProvider):
         ) as client:
             response = await client.post(
                 "/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False},
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    # Qwen 3 models otherwise expose a lengthy reasoning trace
+                    # as response text, consuming the run's bounded output budget.
+                    "think": get_settings().ollama_think,
+                },
             )
         response.raise_for_status()
         payload = response.json()
@@ -91,6 +103,22 @@ class OllamaProvider(ModelProvider):
             output_tokens=_as_nonnegative_int(payload.get("eval_count")),
             source="provider_reported",
         )
+
+    def _ensure_memory_available(self, model: str) -> None:
+        required = get_settings().ollama_required_free_memory_bytes(model)
+        if not required:
+            return
+        available = self.available_memory()
+        if available is None:
+            raise RuntimeError(
+                "Unable to determine available host memory; refusing the configured local model."
+            )
+        if available < required:
+            gib = 1024**3
+            raise RuntimeError(
+                f"Insufficient host memory for {model}: {available / gib:.1f} GiB available, "
+                f"but the configured safety floor is {required / gib:.1f} GiB."
+            )
 
     async def list_models(self) -> list[str]:
         """Return locally pulled models, or an empty list when Ollama is unavailable."""

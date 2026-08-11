@@ -3,6 +3,8 @@ import json
 import httpx
 import pytest
 
+from services.api.app import providers
+from services.api.app.config import Settings
 from services.api.app.providers import MockProvider, OllamaProvider, SGLangProvider
 
 
@@ -23,6 +25,7 @@ async def test_ollama_provider_uses_non_streaming_generate_api() -> None:
             "model": "llama3.2:3b",
             "prompt": "Complete the task.",
             "stream": False,
+            "think": False,
         }
         return httpx.Response(
             200,
@@ -32,6 +35,7 @@ async def test_ollama_provider_uses_non_streaming_generate_api() -> None:
     provider = OllamaProvider(
         base_url="http://ollama.test",
         transport=httpx.MockTransport(handler),
+        available_memory=lambda: 100 * 1024**3,
     )
     result = await provider.generate("Complete the task.", "llama3.2:3b")
 
@@ -39,6 +43,27 @@ async def test_ollama_provider_uses_non_streaming_generate_api() -> None:
     assert result.input_tokens == 11
     assert result.output_tokens == 7
     assert result.source == "provider_reported"
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_rejects_a_model_before_request_when_memory_is_low(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            ollama_model_memory_reserves_gb="qwen3-coder-next:latest=64",
+        ),
+    )
+    provider = OllamaProvider(
+        base_url="http://ollama.test",
+        available_memory=lambda: 32 * 1024**3,
+    )
+
+    with pytest.raises(RuntimeError, match="Insufficient host memory"):
+        await provider.generate("Complete the task.", "qwen3-coder-next:latest")
 
 
 @pytest.mark.asyncio

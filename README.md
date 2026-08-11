@@ -121,6 +121,34 @@ Each role can use a distinct model by setting `TEAMSWARM_CRITERIA_MODEL`,
 `TEAMSWARM_TESTING_MODEL`, and `TEAMSWARM_EVALUATOR_MODEL`. An unset role uses
 its configured fast or strong profile.
 
+For the local models in the quick start, this is a practical no-cost routing
+profile. It reserves the large coding model for implementation, while using
+smaller local models for planning and evaluation:
+
+```dotenv
+TEAMSWARM_PROVIDER_MODE=ollama
+TEAMSWARM_OLLAMA_THINK=false
+TEAMSWARM_CRITERIA_MODEL=llama3.2:3b
+TEAMSWARM_DISCOVERY_MODEL=qwen3:8b
+TEAMSWARM_CODING_MODEL=qwen3-coder-next:latest
+TEAMSWARM_TESTING_MODEL=qwen3:8b
+TEAMSWARM_EVALUATOR_MODEL=qwen3:8b
+TEAMSWARM_TASK_TIMEOUT_SECONDS=180
+TEAMSWARM_MAX_CONCURRENT_TASKS_PER_PROFILE=2
+TEAMSWARM_OLLAMA_MIN_FREE_MEMORY_GB=4
+TEAMSWARM_OLLAMA_MODEL_MEMORY_RESERVES_GB=llama3.2:3b=4,qwen3:8b=12,qwen3-coder-next:latest=64
+```
+
+`TEAMSWARM_OLLAMA_THINK=false` prevents Qwen 3's visible reasoning trace from
+consuming the bounded task-output budget. Set it to `true` only when the
+additional reasoning text is intentionally part of the result.
+
+Before every Ollama request, TeamSwarm checks reclaimable host memory. A model
+with an unmet configured floor is not sent to Ollama; the normal bounded
+fallback route is then used instead. Treat the 64 GiB coding-model floor as a
+starting point for unified-memory machines, and increase it if other local
+applications or models run at the same time.
+
 ## Local stable-version history
 
 When a delivery-cycle evaluator returns `GOAL_ACHIEVED: yes`, TeamSwarm creates
@@ -139,6 +167,18 @@ deduplicates content, prioritizes required and high-authority evidence, applies
 run-scoped context manifest. When a delivery cycle repeats, a bounded structured
 handoff summary carries forward prior role outputs rather than replaying the
 whole transcript.
+
+An opt-in Python repository index adds task-relevant workspace symbols using
+hybrid exact-term, deterministic local embedding, and direct call-graph rankings.
+The index adds contextual chunk headers, fuses the independent rankings,
+deduplicates candidates, and applies a bounded reranker before context budgeting.
+Every selected chunk records its winning retrieval signal, fused score, embedding
+version, source location, and workspace revision. Enable it with
+`TEAMSWARM_CODE_CONTEXT_ENABLED=true`; tune its bounded scan and result set with
+`TEAMSWARM_CODE_CONTEXT_MAX_FILES` and `TEAMSWARM_CODE_CONTEXT_MAX_ITEMS`. Each
+selected snippet still includes exact source text and line provenance in the
+context manifest. Learned embeddings, other languages, and learned reranking
+remain planned extensions.
 
 ## Skills and planning agents
 

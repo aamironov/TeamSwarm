@@ -231,6 +231,41 @@ added only after a baseline evaluation suite exists.
    input-token reduction, and overflow behavior before enabling semantic
    retrieval or learned selection.
 
+#### Hybrid repository-context roadmap
+
+Repository context is selected by complementary retrieval signals; a code graph
+does not replace exact or semantic search.
+
+1. **Lexical and structural baseline.** Parse supported languages into typed
+   repository, file, symbol, and test nodes. Seed retrieval with exact paths,
+   identifiers, diagnostics, and BM25-style term scores, then expand only one or
+   two typed graph hops through calls, imports, references, inheritance, and test
+   relationships. Render compact signatures first and exact snippets only for
+   the highest-ranked evidence. The initial implementation supports Python AST
+   symbols and direct call edges behind an opt-in setting.
+2. **Hybrid semantic retrieval (implemented for Python).** Add contextual chunk
+   headers and deterministic local feature-hash embeddings, fuse lexical,
+   semantic, and graph rankings, and deduplicate before a bounded reranker.
+   Preserve the winning signal, score, embedding/index versions, repository
+   revision, path, symbol, and line span in every manifest entry. Learned
+   embedding adapters remain a later, evaluation-gated enhancement.
+3. **Hierarchical context.** Maintain versioned repository/package summaries,
+   symbol skeletons, exact snippets, and compact agent handoffs. Select fidelity
+   by task and risk; never lossily compress policies, schemas, code being edited,
+   exact diagnostics, or acceptance criteria.
+4. **Evaluation-gated learning.** Compare every change with the deterministic
+   baseline on evidence recall, patch/test success, hallucinated symbols, input
+   tokens, time to first token, total latency, and cache-hit rate. Learned
+   selection and reranking require a replayable evaluation corpus and rollback.
+5. **Offline prompt compilation.** Generate and score instruction and example
+   candidates using a DSPy/OPRO-style optimizer. Store candidates as immutable
+   prompt versions and promote them only after quality, security, cost, and
+   latency regression gates; production workers never rewrite live prompts.
+
+Retrieved files, documents, tool output, and agent artifacts remain untrusted
+data even when highly ranked. Policy filtering happens before retrieval, and
+tool authorization is enforced outside the model after retrieval.
+
 SGLang prefix caching can make repeated, identical prompt prefixes cheaper and
 faster, but it is a serving optimization rather than an authorization boundary.
 TeamSwarm therefore shares only immutable, policy-approved prefix material and
@@ -1280,7 +1315,12 @@ the split.
 
 ### Phase 4: Adaptive optimization
 
-- retrieval-backed context optimization;
+- hybrid lexical, semantic, and code-graph context optimization;
+- contextual chunk headers, bounded reranking, and hierarchical summaries;
+- versioned prompt evaluation datasets and offline prompt compilation;
+- selective natural-language prompt compression with loss-sensitive exclusions;
+- exact context-package caching and semantic caching only for eligible,
+  low-risk read-only tasks;
 - typed conditional, map/reduce, and bounded refinement workflow templates;
 - review/repair loops with explicit quality gates and a human-approval template
   for protected decisions;

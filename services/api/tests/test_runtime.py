@@ -294,6 +294,48 @@ async def test_run_adds_attached_text_file_to_every_task_prompt(isolated_runtime
 
 
 @pytest.mark.asyncio
+async def test_runtime_retrieves_workspace_code_when_enabled(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "orders.py").write_text(
+        "def normalize_payload(raw):\n"
+        "    return raw.strip()\n\n"
+        "def process_order(raw):\n"
+        "    return normalize_payload(raw)\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_context_roots=str(tmp_path),
+        code_context_enabled=True,
+        code_context_max_items=2,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    provider = CapturingProvider()
+    service = RunService(provider=provider)
+
+    created = await service.create(
+        RunCreate(
+            objective="Inspect process_order.",
+            workspace_root=str(workspace),
+        )
+    )
+    await _wait_for_run(service, created.id)
+    trace = await service.trace(created.id)
+
+    assert "def process_order(raw):" in provider.prompts[0]
+    selected = trace.context_manifests[0]["selected"]
+    code_items = [item for item in selected if item["source"] == "workspace_code"]
+    assert code_items
+    metadata = code_items[0]["metadata"]
+    assert metadata["index_version"] == "python-hybrid-graph-v2"
+    assert metadata["embedding_version"] == "feature-hash-word-trigram-v1"
+    assert metadata["retrieval_signal"]
+    assert float(metadata["retrieval_score"]) > 0
+
+
+@pytest.mark.asyncio
 async def test_delivery_cycle_repeats_until_evaluator_accepts_and_uses_role_models(
     isolated_runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

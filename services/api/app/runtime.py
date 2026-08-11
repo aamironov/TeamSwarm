@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .attachments import render_attachments
+from .code_context import RepositoryCodeIndex
 from .config import get_settings
 from .context import ContextItem, ContextOptimizer
 from .db import SessionLocal
@@ -39,6 +40,7 @@ from .planner import (
     build_refinement_plan,
     build_review_repair_plan,
 )
+from .prompt_optimizer import PromptOptimizer, PromptSpec
 from .providers import ModelProvider, ProviderResult, get_provider
 from .routing import route_task
 from .schemas import (
@@ -83,6 +85,8 @@ class RunService:
         self._claim_lock = asyncio.Lock()
         self._finalize_lock = asyncio.Lock()
         self.context_optimizer = ContextOptimizer()
+        self.prompt_optimizer = PromptOptimizer()
+        self._code_indexes: dict[str, RepositoryCodeIndex] = {}
         self.version_control = version_control or LocalGitVersionControl()
         self.inline_worker_enabled = (
             get_settings().inline_worker_enabled
@@ -1337,12 +1341,17 @@ class RunService:
             timeout_seconds=settings.tool_timeout_seconds,
             max_output_chars=settings.max_tool_output_chars,
         )
-        prompt = self._render_prompt(
-            task.objective,
-            context,
-            contract.expected_output,
-            gateway.prompt_catalog(permissions),
+        rendered_prompt = self.prompt_optimizer.render(
+            PromptSpec(
+                objective=task.objective,
+                context=context,
+                expected_output=contract.expected_output,
+                tool_catalog=gateway.prompt_catalog(permissions),
+                agent_role=task.agent_role,
+                version=contract.prompt_version,
+            )
         )
+        prompt = rendered_prompt.text
         await self._record_attempt_event(
             run_id,
             task_id,
@@ -1350,7 +1359,9 @@ class RunService:
             "Versioned task prompt rendered from the authorized context package",
             {
                 "prompt_version": contract.prompt_version,
-                "rendered_prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
+                "prompt_optimizer_version": rendered_prompt.optimizer_version,
+                "prompt_spec_hash": rendered_prompt.spec_hash,
+                "rendered_prompt_hash": rendered_prompt.prompt_hash,
                 "context_hash": hashlib.sha256(context.encode()).hexdigest(),
             },
         )
@@ -1540,6 +1551,18 @@ class RunService:
             )
             for skill in run.skills
         )
+        settings = get_settings()
+        if settings.code_context_enabled and run.workspace_root:
+            root = Path(run.workspace_root).resolve()
+            cache_key = str(root)
+            index = self._code_indexes.get(cache_key)
+            revision = RepositoryCodeIndex.workspace_revision(
+                root, settings.code_context_max_files
+            )
+            if index is None or index.revision != revision:
+                index = RepositoryCodeIndex.build(root, settings.code_context_max_files)
+                self._code_indexes[cache_key] = index
+            items.extend(index.retrieve(task.objective, settings.code_context_max_items))
         capability = await session.scalar(
             select(TaskCapabilityRecord).where(TaskCapabilityRecord.task_id == task.id)
         )
@@ -1905,13 +1928,14 @@ class RunService:
         expected_output: str,
         tool_catalog: str = "No tools are authorized for this task.",
     ) -> str:
-        return (
-            "You are a TeamSwarm specialist agent. Complete the bounded objective. "
-            "Return a concise, evidence-aware result.\n\n"
-            f"Objective: {objective}\n\nExpected output: {expected_output}"
-            f"\n\nAuthorized context:\n{context or 'None'}"
-            f"\n\n{tool_catalog}"
-        )
+        return PromptOptimizer().render(
+            PromptSpec(
+                objective=objective,
+                context=context,
+                expected_output=expected_output,
+                tool_catalog=tool_catalog,
+            )
+        ).text
 
     @staticmethod
     def _validate_provider_result(result: object) -> None:

@@ -31,3 +31,20 @@ def test_sglang_route_marks_model_as_local_and_preserves_fallback() -> None:
     assert route.location == "local"
     assert route.model == "Qwen/Qwen3-8B"
     assert route.fallback_model == "Qwen/Qwen3-8B"
+
+
+def test_delivery_roles_can_route_to_distinct_local_models() -> None:
+    settings = Settings(
+        provider_mode="ollama",
+        criteria_model="llama3.2:3b",
+        discovery_model="qwen3:8b",
+        coding_model="qwen3-coder-next:latest",
+        testing_model="qwen3:8b",
+        evaluator_model="qwen3:8b",
+    )
+
+    assert settings.model_for_role("criteria", "fast") == "llama3.2:3b"
+    assert settings.model_for_role("discovery", "strong") == "qwen3:8b"
+    assert settings.model_for_role("coding", "strong") == "qwen3-coder-next:latest"
+    assert settings.model_for_role("testing", "strong") == "qwen3:8b"
+    assert settings.model_for_role("evaluator", "strong") == "qwen3:8b"

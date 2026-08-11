@@ -27,7 +27,7 @@ async def test_provider_planning_agent_generates_a_validated_dag() -> None:
     result = await ProviderPlanningAgent(PlanningProvider()).generate(
         RunCreate(objective="Investigate the failure."),
         [],
-        Settings(strong_model="planner-model"),
+        Settings(_env_file=None, strong_model="planner-model"),
     )
 
     assert result.backend == "provider-agent"

@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     strong_model: str = "gpt-5.6-sol"
     fallback_model: str = "gpt-5.6-sol"
     ollama_base_url: str = "http://localhost:11434"
+    ollama_think: bool = False
+    ollama_min_free_memory_gb: float = 0
+    ollama_model_memory_reserves_gb: str = ""
     ollama_fast_model: str = "llama3.2:3b"
     ollama_strong_model: str = "qwen3:8b"
     ollama_fallback_model: str = "qwen3:8b"
@@ -35,6 +38,9 @@ class Settings(BaseSettings):
     tool_timeout_seconds: int = 120
     max_tool_output_chars: int = 50_000
     context_token_budget: int = 6_000
+    code_context_enabled: bool = False
+    code_context_max_files: int = 500
+    code_context_max_items: int = 6
     project_context_roots: str = "."
     skill_roots: str = "./skills"
     default_token_budget: int = 12_000
@@ -56,6 +62,21 @@ class Settings(BaseSettings):
         if provider_mode == "sglang":
             return self.sglang_fallback_model
         return self.fallback_model
+
+    def ollama_required_free_memory_bytes(self, model: str) -> int:
+        """Return the configured host-memory floor for an Ollama model."""
+        reserve_gb = self.ollama_min_free_memory_gb
+        for entry in self.ollama_model_memory_reserves_gb.split(","):
+            if not entry.strip():
+                continue
+            name, separator, value = entry.partition("=")
+            if not separator or not name.strip() or not value.strip():
+                raise ValueError(
+                    "TEAMSWARM_OLLAMA_MODEL_MEMORY_RESERVES_GB entries must use model=GB."
+                )
+            if name.strip() == model:
+                reserve_gb = max(reserve_gb, float(value.strip()))
+        return int(max(0, reserve_gb) * 1024**3)
 
     def model_for_role(self, role: str, profile: str) -> str:
         configured = {
