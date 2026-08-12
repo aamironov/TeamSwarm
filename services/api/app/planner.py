@@ -56,7 +56,10 @@ def build_plan(request: RunCreate) -> list[PlannedTask]:
         raise ValueError("Prompt quantification cannot be combined with explicit subtasks.")
     if request.prompt_variants:
         normalized_variants = [variant.strip().casefold() for variant in request.prompt_variants]
-        if not all(normalized_variants) or len(set(normalized_variants)) != len(normalized_variants):
+        if (
+            not all(normalized_variants)
+            or len(set(normalized_variants)) != len(normalized_variants)
+        ):
             raise ValueError("Prompt variants must be non-empty, distinct coverage dimensions.")
         variant_ids = [str(uuid4()) for _ in request.prompt_variants]
         variants = [

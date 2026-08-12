@@ -239,7 +239,9 @@ class RunService:
                         {
                             "variant_index": index,
                             "variant_delta_hash": hashlib.sha256(variant.encode()).hexdigest(),
-                            "shared_prefix_hash": hashlib.sha256(shared_prefix.encode()).hexdigest(),
+                            "shared_prefix_hash": hashlib.sha256(
+                                shared_prefix.encode()
+                            ).hexdigest(),
                         },
                     )
             await self._event(

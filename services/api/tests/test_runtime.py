@@ -1071,7 +1071,10 @@ async def test_trace_records_context_manifest_and_prompt_quantification(isolated
         for manifest in trace.context_manifests
         if len(manifest["selected"]) == 1
     ]
-    assert all(manifest["selected"][0]["source"] == "attached_file" for manifest in variant_manifests)
+    assert all(
+        manifest["selected"][0]["source"] == "attached_file"
+        for manifest in variant_manifests
+    )
     assert any(
         item["source"] == "agent_handoff"
         for manifest in trace.context_manifests
