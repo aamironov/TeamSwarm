@@ -81,7 +81,8 @@ class ConcurrentProvider(ModelProvider):
     async def generate(self, prompt: str, model: str) -> ProviderResult:
         self.active += 1
         self.max_active = max(self.max_active, self.active)
-        await asyncio.sleep(0.02)
+        # Leave enough room for SQLite's serialized queue claims on a loaded CI host.
+        await asyncio.sleep(0.1)
         self.active -= 1
         return ProviderResult("parallel result", 10, 5, "internally_metered")
 
@@ -275,6 +276,55 @@ async def test_runtime_completes_direct_run_and_records_usage(isolated_runtime) 
     assert usage.consumed_tokens > 0
     assert usage.events[0].source == "internally_metered"
     assert any(event.kind == "run_succeeded" for event in trace.events)
+
+
+@pytest.mark.asyncio
+async def test_exact_response_cache_reuses_safe_direct_task_without_provider_call(
+    isolated_runtime,
+) -> None:
+    provider = CapturingProvider()
+    service = RunService(provider=provider)
+
+    first = await service.create(RunCreate(objective="Summarize the incident."))
+    await _wait_for_run(service, first.id)
+    second = await service.create(RunCreate(objective="Summarize the incident."))
+    await _wait_for_run(service, second.id)
+
+    trace = await service.trace(second.id)
+    usage = await service.usage(second.id)
+
+    assert len(provider.prompts) == 1
+    assert any(
+        event.kind == "response_cache_hit" and event.metadata["cache_mode"] == "exact"
+        for event in trace.events
+    )
+    assert usage.consumed_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_semantic_response_cache_is_opt_in_and_requires_matching_context(
+    isolated_runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = Settings(
+        semantic_response_cache_enabled=True,
+        semantic_response_cache_min_similarity=0.5,
+    )
+    monkeypatch.setattr(runtime, "get_settings", lambda: settings)
+    provider = CapturingProvider()
+    service = RunService(provider=provider)
+
+    first = await service.create(RunCreate(objective="Summarize incident impact now."))
+    await _wait_for_run(service, first.id)
+    second = await service.create(RunCreate(objective="Summarize incident impact today."))
+    await _wait_for_run(service, second.id)
+
+    trace = await service.trace(second.id)
+
+    assert len(provider.prompts) == 1
+    assert any(
+        event.kind == "response_cache_hit" and event.metadata["cache_mode"] == "semantic"
+        for event in trace.events
+    )
 
 
 @pytest.mark.asyncio
@@ -1012,13 +1062,24 @@ async def test_trace_records_context_manifest_and_prompt_quantification(isolated
     manifests = [event for event in trace.events if event.kind == "context_manifest"]
 
     assert any(event.kind == "prompt_quantified" for event in trace.events)
-    assert len(manifests) == 2
-    assert all(event.metadata["selected_count"] == 1 for event in manifests)
+    assert len(manifests) == 3
+    assert sorted(event.metadata["selected_count"] for event in manifests) == [1, 1, 3]
     assert all(event.metadata["estimated_tokens"] > 0 for event in manifests)
-    assert len(trace.context_manifests) == 2
-    assert all(
-        manifest["selected"][0]["source"] == "attached_file" for manifest in trace.context_manifests
+    assert len(trace.context_manifests) == 3
+    variant_manifests = [
+        manifest
+        for manifest in trace.context_manifests
+        if len(manifest["selected"]) == 1
+    ]
+    assert all(manifest["selected"][0]["source"] == "attached_file" for manifest in variant_manifests)
+    assert any(
+        item["source"] == "agent_handoff"
+        for manifest in trace.context_manifests
+        for item in manifest["selected"]
     )
+    variants = [event for event in trace.events if event.kind == "prompt_variant_planned"]
+    assert len(variants) == 2
+    assert len({event.metadata["variant_delta_hash"] for event in variants}) == 2
 
 
 @pytest.mark.asyncio

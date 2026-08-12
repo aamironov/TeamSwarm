@@ -22,6 +22,7 @@ from .models import (
     ContextManifestRecord,
     EvaluationRecord,
     QueueItemRecord,
+    ResponseCacheRecord,
     RunIdempotencyRecord,
     RunRecord,
     TaskCapabilityRecord,
@@ -200,6 +201,19 @@ class RunService:
                 )
             )
             if request.prompt_variants:
+                shared_prefix = "\n".join(
+                    [
+                        request.objective,
+                        *[
+                            f"{attachment.filename}:{attachment.content}"
+                            for attachment in request.attachments
+                        ],
+                        *[
+                            f"{skill.name}:{skill.content_hash}"
+                            for skill in selected_skills
+                        ],
+                    ]
+                )
                 await self._event(
                     session,
                     run,
@@ -210,8 +224,24 @@ class RunService:
                         "parent_prompt_hash": hashlib.sha256(
                             request.objective.encode()
                         ).hexdigest(),
+                        "shared_prefix_hash": hashlib.sha256(shared_prefix.encode()).hexdigest(),
                     },
                 )
+                for index, (task, variant) in enumerate(
+                    zip(plan[:-1], request.prompt_variants, strict=True), start=1
+                ):
+                    await self._event(
+                        session,
+                        run,
+                        "prompt_variant_planned",
+                        f"Quantified variant {index} assigned a distinct coverage dimension.",
+                        task.id,
+                        {
+                            "variant_index": index,
+                            "variant_delta_hash": hashlib.sha256(variant.encode()).hexdigest(),
+                            "shared_prefix_hash": hashlib.sha256(shared_prefix.encode()).hexdigest(),
+                        },
+                    )
             await self._event(
                 session,
                 run,
@@ -1191,6 +1221,9 @@ class RunService:
             "approval_proposer": read_tools,
             "approved_executor": read_tools | write_tools,
             "approval_verifier": read_tools,
+            "subtask": read_tools | write_tools,
+            "quantified_variant": set(),
+            "quantification_consolidator": set(),
             "evaluator": read_tools,
         }.get(role, read_tools | write_tools)
         return [
@@ -1365,15 +1398,49 @@ class RunService:
                 "context_hash": hashlib.sha256(context.encode()).hexdigest(),
             },
         )
+        cache_mode: str | None = None
+        result: ProviderResult | None = None
+        selected_model = model
+        selected_profile = task.model_profile
+        cached = await self._lookup_response_cache(
+            run=run,
+            task=task,
+            contract=contract,
+            permissions=permissions,
+            model=model,
+            prompt_hash=rendered_prompt.prompt_hash,
+            context_hash=hashlib.sha256(context.encode()).hexdigest(),
+        )
+        if cached:
+            cache_mode, cached_record = cached
+            result = ProviderResult(
+                text=cached_record.output,
+                input_tokens=0,
+                output_tokens=0,
+                source="internally_metered",
+            )
+            selected_model = cached_record.model
+            selected_profile = cached_record.profile
+            await self._record_attempt_event(
+                run_id,
+                task_id,
+                "response_cache_hit",
+                f"Reused a {cache_mode} cached response without provider invocation",
+                {
+                    "cache_mode": cache_mode,
+                    "cache_entry_id": cached_record.id,
+                    "source_run_id": cached_record.source_run_id,
+                    "source_task_id": cached_record.source_task_id,
+                },
+            )
         attempts = [(model, task.model_profile)]
         if settings.max_task_attempts > 1:
             attempts.append((route.fallback_model, "strong"))
         attempts = attempts[: settings.max_task_attempts]
-        result = None
-        selected_model = model
-        selected_profile = task.model_profile
         last_error = "Unknown provider failure."
-        for attempt_number, (attempt_model, attempt_profile) in enumerate(attempts, start=1):
+        for attempt_number, (attempt_model, attempt_profile) in enumerate(
+            [] if cached else attempts, start=1
+        ):
             attempt_prompt = prompt
             if attempt_number > 1:
                 attempt_prompt = (
@@ -1479,6 +1546,17 @@ class RunService:
                     rationale="The result is non-empty and satisfied the MVP contract check.",
                 )
             )
+            if self._response_cache_eligible(run, task, permissions):
+                await self._store_response_cache(
+                    session=session,
+                    run=run,
+                    task=task,
+                    contract=contract,
+                    model=selected_model,
+                    prompt_hash=rendered_prompt.prompt_hash,
+                    context_hash=hashlib.sha256(context.encode()).hexdigest(),
+                    output=result.text,
+                )
             downstream = list(
                 (await session.scalars(select(TaskRecord).where(TaskRecord.run_id == run_id))).all()
             )
@@ -1520,6 +1598,130 @@ class RunService:
         if run is None:
             return ""
         return "\n\n".join(item.text for item in await self._context_items(session, run, task))
+
+    @staticmethod
+    def _response_cache_eligible(
+        run: RunRecord, task: TaskRecord, permissions: list[str]
+    ) -> bool:
+        """Keep response reuse out of workflows and every tool-capable task.
+
+        A cached response is a performance optimization, not an authorization
+        channel. Only a direct, generic task without any exposed tool can reuse
+        an output across runs. Context and model identity are checked separately.
+        """
+        return (
+            run.workflow == "standard"
+            and task.agent_role == "general"
+            and not any(permission.startswith("tool:") for permission in permissions)
+        )
+
+    @staticmethod
+    def _response_cache_key(
+        prompt_hash: str, context_hash: str, model: str, expected_output_hash: str
+    ) -> str:
+        material = "\x1f".join((prompt_hash, context_hash, model, expected_output_hash))
+        return hashlib.sha256(material.encode()).hexdigest()
+
+    @staticmethod
+    def _objective_similarity(left: str, right: str) -> float:
+        """Deterministic token-set similarity for the opt-in semantic cache."""
+        left_tokens = {token for token in left.casefold().split() if len(token) > 2}
+        right_tokens = {token for token in right.casefold().split() if len(token) > 2}
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+    async def _lookup_response_cache(
+        self,
+        *,
+        run: RunRecord,
+        task: TaskRecord,
+        contract: TaskContractRecord,
+        permissions: list[str],
+        model: str,
+        prompt_hash: str,
+        context_hash: str,
+    ) -> tuple[str, ResponseCacheRecord] | None:
+        settings = get_settings()
+        if not settings.response_cache_enabled or not self._response_cache_eligible(
+            run, task, permissions
+        ):
+            return None
+        expected_output_hash = hashlib.sha256(contract.expected_output.encode()).hexdigest()
+        exact_key = self._response_cache_key(
+            prompt_hash, context_hash, model, expected_output_hash
+        )
+        async with SessionLocal() as session:
+            exact = await session.scalar(
+                select(ResponseCacheRecord).where(
+                    ResponseCacheRecord.exact_key == exact_key,
+                    ResponseCacheRecord.source_run_id != run.id,
+                )
+            )
+            if exact:
+                return "exact", exact
+            if not settings.semantic_response_cache_enabled:
+                return None
+            candidates = list(
+                (
+                    await session.scalars(
+                        select(ResponseCacheRecord)
+                        .where(
+                            ResponseCacheRecord.context_hash == context_hash,
+                            ResponseCacheRecord.expected_output_hash == expected_output_hash,
+                            ResponseCacheRecord.model == model,
+                            ResponseCacheRecord.profile == task.model_profile,
+                            ResponseCacheRecord.source_run_id != run.id,
+                        )
+                        .order_by(ResponseCacheRecord.created_at.desc())
+                        .limit(50)
+                    )
+                ).all()
+            )
+        threshold = min(1.0, max(0.0, settings.semantic_response_cache_min_similarity))
+        scored = [
+            (self._objective_similarity(task.objective, candidate.objective), candidate)
+            for candidate in candidates
+        ]
+        best = max(scored, default=None, key=lambda item: item[0])
+        if best and best[0] >= threshold:
+            return "semantic", best[1]
+        return None
+
+    async def _store_response_cache(
+        self,
+        *,
+        session: AsyncSession,
+        run: RunRecord,
+        task: TaskRecord,
+        contract: TaskContractRecord,
+        model: str,
+        prompt_hash: str,
+        context_hash: str,
+        output: str,
+    ) -> None:
+        expected_output_hash = hashlib.sha256(contract.expected_output.encode()).hexdigest()
+        exact_key = self._response_cache_key(
+            prompt_hash, context_hash, model, expected_output_hash
+        )
+        existing = await session.scalar(
+            select(ResponseCacheRecord.id).where(ResponseCacheRecord.exact_key == exact_key)
+        )
+        if existing is None:
+            session.add(
+                ResponseCacheRecord(
+                    exact_key=exact_key,
+                    prompt_hash=prompt_hash,
+                    context_hash=context_hash,
+                    expected_output_hash=expected_output_hash,
+                    objective=task.objective,
+                    model=model,
+                    profile=task.model_profile,
+                    output=output,
+                    source_run_id=run.id,
+                    source_task_id=task.id,
+                )
+            )
 
     async def _context_items(
         self, session: AsyncSession, run: RunRecord, task: TaskRecord

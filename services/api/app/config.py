@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     code_context_enabled: bool = False
     code_context_max_files: int = 500
     code_context_max_items: int = 6
+    response_cache_enabled: bool = True
+    semantic_response_cache_enabled: bool = False
+    semantic_response_cache_min_similarity: float = 0.92
     project_context_roots: str = "."
     skill_roots: str = "./skills"
     default_token_budget: int = 12_000

@@ -367,7 +367,7 @@ Prompt templates and transformations are versioned. A run records the canonical
 prompt, rendered prompt hash, optimizer version, model, and parameters.
 Secrets are referenced by handle and are never embedded in traceable prompts.
 
-#### Prompt quantification (planned)
+#### Prompt quantification
 
 Prompt quantification is the controlled transformation of one parent
 `PromptSpec` into a bounded set of independently executable prompt variants or

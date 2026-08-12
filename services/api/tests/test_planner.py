@@ -75,13 +75,17 @@ def test_prompt_quantification_creates_bounded_partitioned_tasks() -> None:
         )
     )
 
-    assert len(plan) == 3
-    assert all("Coverage dimension:" in task.objective for task in plan)
-    assert {task.objective.rsplit("Coverage dimension: ", 1)[1] for task in plan} == {
+    assert len(plan) == 4
+    variants = plan[:-1]
+    consolidator = plan[-1]
+    assert all("Coverage dimension:" in task.objective for task in variants)
+    assert {task.objective.rsplit("Coverage dimension: ", 1)[1] for task in variants} == {
         "cost risks",
         "delivery risks",
         "quality risks",
     }
+    assert consolidator.agent_role == "quantification_consolidator"
+    assert consolidator.dependencies == [task.id for task in variants]
 
 
 def test_prompt_quantification_cannot_be_combined_with_explicit_subtasks() -> None:
@@ -91,6 +95,16 @@ def test_prompt_quantification_cannot_be_combined_with_explicit_subtasks() -> No
                 objective="Invalid plan.",
                 subtasks=[SubtaskInput(objective="A task.")],
                 prompt_variants=["variant"],
+            )
+        )
+
+
+def test_prompt_quantification_rejects_duplicate_coverage_dimensions() -> None:
+    with pytest.raises(ValueError, match="distinct coverage dimensions"):
+        build_plan(
+            RunCreate(
+                objective="Invalid plan.",
+                prompt_variants=["Cost risks", " cost risks "],
             )
         )
 

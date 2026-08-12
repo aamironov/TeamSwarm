@@ -182,12 +182,40 @@ context manifest. This index applies only to runs with a selected
 context. Learned embeddings, other languages, and learned reranking remain
 planned extensions.
 
+For safe repeated direct requests, TeamSwarm also reuses an exact prior response
+when its rendered prompt, selected context, expected output contract, and model
+all match. This cache is limited to tool-free standard tasks and never exposes
+run-scoped agent handoffs. An optional semantic fallback remains off by default;
+when enabled, it still requires the identical selected context, model, and
+contract, and compares only bounded direct-task objectives. Configure it with
+`TEAMSWARM_RESPONSE_CACHE_ENABLED`,
+`TEAMSWARM_SEMANTIC_RESPONSE_CACHE_ENABLED`, and
+`TEAMSWARM_SEMANTIC_RESPONSE_CACHE_MIN_SIMILARITY`. Cache reuse is recorded as
+`response_cache_hit` in the run trace and consumes no provider tokens.
+
 TeamSwarm renders every task prompt from a versioned, provider-neutral prompt
 specification. The trace records the prompt-spec, rendered-prompt, and context
 hashes, allowing a run to be reproduced without treating retrieved content as
 instructions. Context, attachments, handoffs, and tool output are always
 rendered as untrusted evidence; the prompt explicitly keeps tool and workspace
 authorization outside the model.
+
+## Quantify a prompt into bounded evidence partitions
+
+For a standard API run, provide one to three distinct `prompt_variants`. TeamSwarm
+creates one tool-free task per coverage dimension, gives every child the same
+immutable prompt prefix, then creates a dependency-bound consolidator that sees
+only the children’s explicitly granted results. The trace records the parent,
+shared-prefix, and per-variant-delta hashes; it also retains every child result
+for provenance and conflict reporting. Variants cannot be combined with explicit
+subtasks or typed workflows.
+
+```json
+{
+  "objective": "Assess the launch plan.",
+  "prompt_variants": ["cost risks", "delivery risks", "quality risks"]
+}
+```
 
 ## Skills and planning agents
 

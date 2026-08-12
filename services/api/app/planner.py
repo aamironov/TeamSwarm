@@ -55,17 +55,36 @@ def build_plan(request: RunCreate) -> list[PlannedTask]:
     if request.prompt_variants and request.subtasks:
         raise ValueError("Prompt quantification cannot be combined with explicit subtasks.")
     if request.prompt_variants:
-        return [
+        normalized_variants = [variant.strip().casefold() for variant in request.prompt_variants]
+        if not all(normalized_variants) or len(set(normalized_variants)) != len(normalized_variants):
+            raise ValueError("Prompt variants must be non-empty, distinct coverage dimensions.")
+        variant_ids = [str(uuid4()) for _ in request.prompt_variants]
+        variants = [
             PlannedTask(
-                str(uuid4()),
+                task_id,
                 f"{request.objective}\n\nCoverage dimension: {variant}",
                 [],
                 _profile_for(request.objective),
                 request.expected_output,
                 request.acceptance_checks,
                 request.priority,
+                agent_role="quantified_variant",
             )
-            for variant in request.prompt_variants
+            for task_id, variant in zip(variant_ids, request.prompt_variants, strict=True)
+        ]
+        return [
+            *variants,
+            PlannedTask(
+                str(uuid4()),
+                "Consolidate the granted quantified-prompt findings. Preserve each coverage "
+                "dimension's provenance, remove duplicates, and explicitly report conflicts.",
+                variant_ids,
+                "strong",
+                request.expected_output,
+                request.acceptance_checks,
+                request.priority,
+                agent_role="quantification_consolidator",
+            ),
         ]
     if not request.subtasks:
         return [
@@ -103,6 +122,7 @@ def build_plan(request: RunCreate) -> list[PlannedTask]:
                 item.expected_output,
                 item.acceptance_checks,
                 item.priority,
+                agent_role="subtask",
             )
         )
     _validate_acyclic(planned)

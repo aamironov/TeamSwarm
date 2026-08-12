@@ -283,6 +283,30 @@ class CacheEntryRecord(Base):
     state: Mapped[str] = mapped_column(String(20), default="unverified")
 
 
+class ResponseCacheRecord(Base):
+    """Cross-run, read-only response reuse.
+
+    This is intentionally separate from ``CacheEntryRecord``. Cache entries are
+    run-scoped handoff artifacts and must never become discoverable merely
+    because a later task happens to have a similar prompt.
+    """
+
+    __tablename__ = "response_cache"
+    __table_args__ = (UniqueConstraint("exact_key", name="uq_response_cache_exact_key"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    exact_key: Mapped[str] = mapped_column(String(64), index=True)
+    prompt_hash: Mapped[str] = mapped_column(String(64), index=True)
+    context_hash: Mapped[str] = mapped_column(String(64), index=True)
+    expected_output_hash: Mapped[str] = mapped_column(String(64), index=True)
+    objective: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String(160))
+    profile: Mapped[str] = mapped_column(String(10))
+    output: Mapped[str] = mapped_column(Text)
+    source_run_id: Mapped[str] = mapped_column(String(36))
+    source_task_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class CacheGrantRecord(Base):
     __tablename__ = "cache_grants"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
