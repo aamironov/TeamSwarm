@@ -35,7 +35,7 @@ control plane yet.
 ### Included
 
 - Request API with run creation, status, cancellation, and final result.
-- Provider adapter interface with mock, OpenAI, Ollama, and SGLang
+- Provider adapter interface with mock, OpenAI, Bytez, OpenRouter, Ollama, and SGLang
   implementations; one provider mode is active for each run environment.
 - Two configured model profiles: `fast` and `strong`.
 - Canonical run, task, model-selection, result, cache-grant, and usage-event

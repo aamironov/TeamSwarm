@@ -97,8 +97,29 @@ class AutoGenPlanningAgent(TaskGenerator):
                 api_key="ollama",
                 base_url=f"{settings.ollama_base_url.rstrip('/')}/v1",
             )
+        elif settings.provider_mode == "bytez":
+            api_key = (
+                settings.bytez_api_key.get_secret_value() if settings.bytez_api_key else ""
+            )
+            arguments.update(
+                api_key=api_key,
+                base_url=settings.bytez_base_url.rstrip("/"),
+            )
+        elif settings.provider_mode == "openrouter":
+            api_key = (
+                settings.openrouter_api_key.get_secret_value()
+                if settings.openrouter_api_key
+                else ""
+            )
+            arguments.update(
+                api_key=api_key,
+                base_url=settings.openrouter_base_url.rstrip("/"),
+            )
         else:
-            raise ValueError("AutoGen planning requires openai, sglang, or ollama provider mode.")
+            raise ValueError(
+                "AutoGen planning requires openai, sglang, ollama, bytez, or openrouter "
+                "provider mode."
+            )
 
         client = OpenAIChatCompletionClient(**arguments)
         agent = AssistantAgent(

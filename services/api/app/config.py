@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +24,28 @@ class Settings(BaseSettings):
     sglang_fast_model: str = "Qwen/Qwen3-4B"
     sglang_strong_model: str = "Qwen/Qwen3-8B"
     sglang_fallback_model: str = "Qwen/Qwen3-8B"
+    bytez_api_key: SecretStr | None = None
+    bytez_base_url: str = "https://api.bytez.com/models/v2/openai/v1"
+    bytez_fast_model: str = "Qwen/Qwen3-4B"
+    bytez_strong_model: str = "Qwen/Qwen3-4B"
+    bytez_fallback_model: str = "Qwen/Qwen3-4B"
+    bytez_max_completion_tokens: int = 4_096
+    bytez_max_concurrency: int = 1
+    openrouter_api_key: SecretStr | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "TEAMSWARM_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+            "openrouter_api_key",
+        ),
+    )
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_site_url: str | None = None
+    openrouter_app_name: str = "TeamSwarm"
+    openrouter_fast_model: str = "openrouter/free"
+    openrouter_strong_model: str = "openrouter/free"
+    openrouter_fallback_model: str = "openrouter/free"
+    openrouter_max_completion_tokens: int = 4_096
     criteria_model: str | None = None
     discovery_model: str | None = None
     coding_model: str | None = None
@@ -56,6 +79,14 @@ class Settings(BaseSettings):
             return self.ollama_strong_model if profile == "strong" else self.ollama_fast_model
         if provider_mode == "sglang":
             return self.sglang_strong_model if profile == "strong" else self.sglang_fast_model
+        if provider_mode == "bytez":
+            return self.bytez_strong_model if profile == "strong" else self.bytez_fast_model
+        if provider_mode == "openrouter":
+            return (
+                self.openrouter_strong_model
+                if profile == "strong"
+                else self.openrouter_fast_model
+            )
         return self.strong_model if profile == "strong" else self.fast_model
 
     def fallback_for(self) -> str:
@@ -64,6 +95,10 @@ class Settings(BaseSettings):
             return self.ollama_fallback_model
         if provider_mode == "sglang":
             return self.sglang_fallback_model
+        if provider_mode == "bytez":
+            return self.bytez_fallback_model
+        if provider_mode == "openrouter":
+            return self.openrouter_fallback_model
         return self.fallback_model
 
     def ollama_required_free_memory_bytes(self, model: str) -> int:

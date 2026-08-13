@@ -2,12 +2,12 @@
 
 TeamSwarm is a Python-first, provider-neutral multi-agent orchestration MVP.
 It combines a FastAPI control plane, a database-backed dependency-aware task
-queue, provider adapters (mock, OpenAI, and Ollama), persistent project chat,
-and a Next.js dashboard.
+queue, provider adapters (mock, OpenAI, Bytez, OpenRouter, Ollama, and SGLang),
+persistent project chat, and a Next.js dashboard.
 
 This guide gets the complete application running on one computer. The fastest
-route uses SQLite and the mock provider; Ollama, Docker services, and OpenAI
-are optional additions.
+route uses SQLite and the mock provider; Bytez, OpenRouter, Ollama, Docker
+services, and OpenAI are optional additions.
 
 ## What runs locally
 
@@ -26,6 +26,8 @@ are optional additions.
 - Node.js 20 or later and npm
 - Git, if you are cloning the project
 - [Ollama](https://ollama.com/) or [SGLang](https://docs.sglang.io/) when running local models
+- A [Bytez](https://bytez.com/) API key when using free-tier hosted open models
+- An [OpenRouter](https://openrouter.ai/) API key when using its model router
 - Docker Desktop only when using PostgreSQL and the optional backing-service
   stack
 
@@ -313,6 +315,56 @@ TeamSwarm calls SGLang's OpenAI-compatible chat-completions API and discovers
 models from its `/v1/models` endpoint. The configured models appear as
 **available** in the Model Catalog once the server reports them.
 
+## Use free-tier hosted models with Bytez
+
+[Create a Bytez API key](https://bytez.com/api), then configure TeamSwarm to use
+the OpenAI-compatible Bytez endpoint:
+
+```dotenv
+TEAMSWARM_PROVIDER_MODE=bytez
+TEAMSWARM_BYTEZ_API_KEY=replace-with-your-key
+TEAMSWARM_BYTEZ_BASE_URL=https://api.bytez.com/models/v2/openai/v1
+TEAMSWARM_BYTEZ_FAST_MODEL=Qwen/Qwen3-4B
+TEAMSWARM_BYTEZ_STRONG_MODEL=Qwen/Qwen3-4B
+TEAMSWARM_BYTEZ_FALLBACK_MODEL=Qwen/Qwen3-4B
+TEAMSWARM_BYTEZ_MAX_COMPLETION_TOKENS=4096
+TEAMSWARM_BYTEZ_MAX_CONCURRENCY=1
+```
+
+The defaults use Bytez's documented Qwen 3 4B chat model, which fits the free
+plan's current open-model limit of up to 7B parameters. The shared concurrency
+gate defaults to one request across TeamSwarm's Bytez adapters in each API or
+worker process, matching the free tier for the normal single-process setup.
+Increase it only when your Bytez plan supports more concurrent requests.
+TeamSwarm does not enable Bytez auto-scaling, and therefore will not
+automatically purchase capacity. Free credits and model eligibility remain
+subject to Bytez's [current billing limits](https://docs.bytez.com/model-api/docs/billing).
+
+## Use OpenRouter models
+
+[Create an OpenRouter API key](https://openrouter.ai/settings/keys), then use
+the zero-cost Free Models Router with:
+
+```dotenv
+TEAMSWARM_PROVIDER_MODE=openrouter
+TEAMSWARM_OPENROUTER_API_KEY=replace-with-your-key
+TEAMSWARM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+TEAMSWARM_OPENROUTER_APP_NAME=TeamSwarm
+TEAMSWARM_OPENROUTER_FAST_MODEL=openrouter/free
+TEAMSWARM_OPENROUTER_STRONG_MODEL=openrouter/free
+TEAMSWARM_OPENROUTER_FALLBACK_MODEL=openrouter/free
+TEAMSWARM_OPENROUTER_MAX_COMPLETION_TOKENS=4096
+```
+
+The conventional `OPENROUTER_API_KEY` environment variable is also accepted.
+`openrouter/free` dynamically selects a currently available free model. For
+repeatable model selection, replace the profile values with a specific
+OpenRouter model slug; free variants use the `:free` suffix. Free-model
+availability and rate limits can change, so this route is intended for
+experimentation and low-volume use. Optionally set
+`TEAMSWARM_OPENROUTER_SITE_URL` to send OpenRouter's app-attribution URL; the
+app title defaults to `TeamSwarm`.
+
 ## Use OpenAI models
 
 Set a provider mode, model names, and a key in `.env`:
@@ -439,12 +491,19 @@ See [evals/README.md](evals/README.md) for the evaluation cases and output.
 | Variable | Meaning | Default in `.env.example` |
 | --- | --- | --- |
 | `TEAMSWARM_DATABASE_URL` | SQLAlchemy async database connection | local PostgreSQL Compose service |
-| `TEAMSWARM_PROVIDER_MODE` | `mock`, `ollama`, `sglang`, or `openai` | `mock` |
+| `TEAMSWARM_PROVIDER_MODE` | `mock`, `bytez`, `openrouter`, `ollama`, `sglang`, or `openai` | `mock` |
 | `TEAMSWARM_OLLAMA_BASE_URL` | Ollama server base URL | `http://localhost:11434` |
 | `TEAMSWARM_OLLAMA_THINK` | includes Ollama/Qwen visible reasoning output | `false` |
 | `TEAMSWARM_OLLAMA_MIN_FREE_MEMORY_GB` | minimum reclaimable RAM before any Ollama request | `0` (disabled) |
 | `TEAMSWARM_OLLAMA_MODEL_MEMORY_RESERVES_GB` | per-model RAM floors as `model=GiB` entries | unset |
 | `TEAMSWARM_SGLANG_BASE_URL` | SGLang server base URL | `http://localhost:30000` |
+| `TEAMSWARM_BYTEZ_API_KEY` | Bytez API credential (required in `bytez` mode) | unset |
+| `TEAMSWARM_BYTEZ_BASE_URL` | Bytez OpenAI-compatible API base URL | Bytez hosted endpoint |
+| `TEAMSWARM_BYTEZ_MAX_COMPLETION_TOKENS` | maximum output tokens requested from Bytez | `4096` |
+| `TEAMSWARM_BYTEZ_MAX_CONCURRENCY` | maximum concurrent Bytez requests | `1` |
+| `TEAMSWARM_OPENROUTER_API_KEY` | OpenRouter credential (required in `openrouter` mode) | unset |
+| `TEAMSWARM_OPENROUTER_BASE_URL` | OpenRouter OpenAI-compatible API base URL | hosted endpoint |
+| `TEAMSWARM_OPENROUTER_SITE_URL` | optional app-attribution URL | unset |
 | `TEAMSWARM_*_MODEL` | fast, strong, and fallback model selection | see `.env.example` |
 | `TEAMSWARM_INLINE_WORKER_ENABLED` | runs a development worker inside the API | `true` |
 | `TEAMSWARM_MAX_CONCURRENT_TASKS` | maximum tasks the local worker executes | `4` |
@@ -470,6 +529,13 @@ See [evals/README.md](evals/README.md) for the evaluation cases and output.
   `npm run dev` after changing it.
 - **Models are listed but unavailable:** the tag is configured but not pulled
   into the active Ollama instance. Run `ollama pull <model-tag>`.
+- **Bytez returns 401:** confirm `TEAMSWARM_BYTEZ_API_KEY` is set in `.env`, then restart
+  the API. For 429 responses on the free plan, retain the default Bytez
+  concurrency of one and retry after the provider's rate-limit window.
+- **OpenRouter returns 401 or 429:** confirm `TEAMSWARM_OPENROUTER_API_KEY` is
+  set and restart the API. Free routes have lower request limits and changing
+  availability; select a specific paid model slug when stronger availability
+  guarantees are required.
 - **Ollama reports insufficient host memory:** lower or remove the applicable
   `TEAMSWARM_OLLAMA_*_MEMORY_*` floor only if the model can safely coexist with
   the other processes on the machine; otherwise choose a smaller model or free

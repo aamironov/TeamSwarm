@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -5,7 +6,13 @@ import pytest
 
 from services.api.app import providers
 from services.api.app.config import Settings
-from services.api.app.providers import MockProvider, OllamaProvider, SGLangProvider
+from services.api.app.providers import (
+    BytezProvider,
+    MockProvider,
+    OllamaProvider,
+    OpenRouterProvider,
+    SGLangProvider,
+)
 
 
 @pytest.mark.asyncio
@@ -15,6 +22,253 @@ async def test_mock_provider_reports_internal_usage() -> None:
     assert result.input_tokens > 0
     assert result.output_tokens > 0
     assert result.source == "internally_metered"
+
+
+@pytest.mark.asyncio
+async def test_bytez_provider_uses_openai_compatible_chat_api() -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            assert kwargs == {
+                "model": "Qwen/Qwen3-4B",
+                "messages": [{"role": "user", "content": "Complete the task."}],
+                "max_tokens": 512,
+            }
+            message = type("Message", (), {"content": "Bytez result"})()
+            choice = type("Choice", (), {"message": message})()
+            usage = type("Usage", (), {"prompt_tokens": 11, "completion_tokens": 7})()
+            return type("Response", (), {"choices": [choice], "usage": usage})()
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+    )()
+    result = await BytezProvider(
+        client=client,
+        max_completion_tokens=512,
+    ).generate("Complete the task.", "Qwen/Qwen3-4B")
+
+    assert result.text == "Bytez result"
+    assert result.input_tokens == 11
+    assert result.output_tokens == 7
+    assert result.source == "provider_reported"
+
+
+@pytest.mark.asyncio
+async def test_bytez_provider_estimates_usage_when_response_omits_it() -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            message = type("Message", (), {"content": "Estimated Bytez result"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice], "usage": None})()
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+    )()
+    result = await BytezProvider(client=client).generate(
+        "Complete the task.", "Qwen/Qwen3-4B"
+    )
+
+    assert result.input_tokens > 0
+    assert result.output_tokens > 0
+    assert result.source == "estimated"
+
+
+def test_bytez_provider_requires_an_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TEAMSWARM_BYTEZ_API_KEY", raising=False)
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(_env_file=None),
+    )
+
+    with pytest.raises(RuntimeError, match="TEAMSWARM_BYTEZ_API_KEY"):
+        BytezProvider()
+
+
+def test_bytez_api_key_loads_from_the_project_env_file(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("TEAMSWARM_BYTEZ_API_KEY=test-key\n")
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.bytez_api_key is not None
+    assert settings.bytez_api_key.get_secret_value() == "test-key"
+    assert "test-key" not in repr(settings)
+
+
+@pytest.mark.asyncio
+async def test_bytez_provider_shares_its_concurrency_limit_across_instances() -> None:
+    class FakeCompletions:
+        active = 0
+        max_active = 0
+
+        async def create(self, **kwargs):
+            type(self).active += 1
+            type(self).max_active = max(type(self).max_active, type(self).active)
+            await asyncio.sleep(0.01)
+            type(self).active -= 1
+            message = type("Message", (), {"content": "Bytez result"})()
+            choice = type("Choice", (), {"message": message})()
+            return type("Response", (), {"choices": [choice], "usage": None})()
+
+    def client():
+        return type(
+            "Client",
+            (),
+            {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+        )()
+
+    first = BytezProvider(client=client(), max_concurrency=1)
+    second = BytezProvider(client=client(), max_concurrency=1)
+
+    await asyncio.gather(
+        first.generate("First task.", "Qwen/Qwen3-4B"),
+        second.generate("Second task.", "Qwen/Qwen3-4B"),
+    )
+
+    assert FakeCompletions.max_active == 1
+
+
+def test_get_provider_selects_bytez(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            provider_mode="bytez",
+            bytez_api_key="test-key",
+        ),
+    )
+
+    assert isinstance(providers.get_provider(), BytezProvider)
+
+
+@pytest.mark.asyncio
+async def test_openrouter_provider_uses_openai_compatible_chat_api() -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            assert kwargs == {
+                "model": "openrouter/free",
+                "messages": [{"role": "user", "content": "Complete the task."}],
+                "max_tokens": 512,
+            }
+            message = type("Message", (), {"content": "OpenRouter result"})()
+            choice = type("Choice", (), {"message": message})()
+            usage = type("Usage", (), {"prompt_tokens": 13, "completion_tokens": 8})()
+            return type("Response", (), {"choices": [choice], "usage": usage})()
+
+    client = type(
+        "Client",
+        (),
+        {"chat": type("Chat", (), {"completions": FakeCompletions()})()},
+    )()
+    result = await OpenRouterProvider(
+        client=client,
+        max_completion_tokens=512,
+    ).generate("Complete the task.", "openrouter/free")
+
+    assert result.text == "OpenRouter result"
+    assert result.input_tokens == 13
+    assert result.output_tokens == 8
+    assert result.source == "provider_reported"
+
+
+def test_openrouter_provider_configures_attribution_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_client(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(providers, "AsyncOpenAI", fake_client)
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            openrouter_api_key="test-key",
+            openrouter_site_url="https://teamswarm.example",
+            openrouter_app_name="TeamSwarm Test",
+        ),
+    )
+
+    OpenRouterProvider()
+
+    assert captured == {
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "test-key",
+        "default_headers": {
+            "X-OpenRouter-Title": "TeamSwarm Test",
+            "HTTP-Referer": "https://teamswarm.example",
+        },
+    }
+
+
+def test_openrouter_provider_requires_an_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TEAMSWARM_OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(_env_file=None),
+    )
+
+    with pytest.raises(RuntimeError, match="TEAMSWARM_OPENROUTER_API_KEY"):
+        OpenRouterProvider()
+
+
+def test_openrouter_api_key_loads_from_its_standard_env_name(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("OPENROUTER_API_KEY=test-key\n")
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.openrouter_api_key is not None
+    assert settings.openrouter_api_key.get_secret_value() == "test-key"
+    assert "test-key" not in repr(settings)
+
+
+def test_get_provider_selects_openrouter(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(
+            _env_file=None,
+            provider_mode="openrouter",
+            openrouter_api_key="test-key",
+        ),
+    )
+
+    assert isinstance(providers.get_provider(), OpenRouterProvider)
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_includes_configured_openrouter_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_models(self) -> list[str]:
+        return []
+
+    monkeypatch.setattr(providers.OllamaProvider, "list_models", no_models)
+    monkeypatch.setattr(providers.SGLangProvider, "list_models", no_models)
+    monkeypatch.setattr(
+        providers,
+        "get_settings",
+        lambda: Settings(_env_file=None),
+    )
+
+    catalog = await providers.get_model_catalog()
+    openrouter = next(model for model in catalog if model.provider == "openrouter")
+
+    assert openrouter.id == "openrouter/free"
+    assert openrouter.location == "remote"
+    assert openrouter.availability == "configured"
+    assert openrouter.profiles == ["fast", "strong", "fallback"]
 
 
 @pytest.mark.asyncio

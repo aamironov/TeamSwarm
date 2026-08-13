@@ -33,6 +33,26 @@ def test_sglang_route_marks_model_as_local_and_preserves_fallback() -> None:
     assert route.fallback_model == "Qwen/Qwen3-8B"
 
 
+def test_bytez_route_uses_remote_free_tier_models() -> None:
+    settings = Settings(provider_mode="bytez")
+
+    route = route_task(settings, "strong", 400)
+
+    assert route.location == "remote"
+    assert route.model == "Qwen/Qwen3-4B"
+    assert route.fallback_model == "Qwen/Qwen3-4B"
+
+
+def test_openrouter_route_uses_remote_free_models_router() -> None:
+    settings = Settings(provider_mode="openrouter")
+
+    route = route_task(settings, "strong", 400)
+
+    assert route.location == "remote"
+    assert route.model == "openrouter/free"
+    assert route.fallback_model == "openrouter/free"
+
+
 def test_delivery_roles_can_route_to_distinct_local_models() -> None:
     settings = Settings(
         provider_mode="ollama",

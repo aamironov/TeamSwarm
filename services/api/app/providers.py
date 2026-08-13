@@ -1,4 +1,6 @@
+import asyncio
 import os
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -55,6 +57,136 @@ class OpenAIProvider(ModelProvider):
             text=response.output_text,
             input_tokens=getattr(usage, "input_tokens", 0) or 0,
             output_tokens=getattr(usage, "output_tokens", 0) or 0,
+            source="provider_reported",
+        )
+
+
+_bytez_limiters: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, dict[int, asyncio.Semaphore]
+] = weakref.WeakKeyDictionary()
+
+
+def _bytez_limiter(max_concurrency: int) -> asyncio.Semaphore:
+    """Share the Bytez account limit across providers on the current event loop."""
+    loop = asyncio.get_running_loop()
+    by_limit = _bytez_limiters.setdefault(loop, {})
+    return by_limit.setdefault(max_concurrency, asyncio.Semaphore(max_concurrency))
+
+
+class BytezProvider(ModelProvider):
+    """Adapter for Bytez's OpenAI-compatible hosted model API."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client: Any | None = None,
+        max_completion_tokens: int | None = None,
+        max_concurrency: int | None = None,
+    ) -> None:
+        settings = get_settings()
+        configured_api_key = (
+            settings.bytez_api_key.get_secret_value() if settings.bytez_api_key else None
+        )
+        resolved_api_key = api_key or configured_api_key
+        if client is None and not resolved_api_key:
+            raise RuntimeError(
+                "TEAMSWARM_BYTEZ_API_KEY is required when TEAMSWARM_PROVIDER_MODE=bytez."
+            )
+        self.base_url = (base_url or settings.bytez_base_url).rstrip("/")
+        self.client = client or AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=resolved_api_key,
+        )
+        self.max_completion_tokens = max(
+            1,
+            max_completion_tokens or settings.bytez_max_completion_tokens,
+        )
+        self.max_concurrency = max(1, max_concurrency or settings.bytez_max_concurrency)
+
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        async with _bytez_limiter(self.max_concurrency):
+            response = await self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=self.max_completion_tokens,
+            )
+        text = response.choices[0].message.content
+        if not isinstance(text, str):
+            raise RuntimeError("Bytez returned a response without text content.")
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return ProviderResult(
+                text=text,
+                input_tokens=_estimate_tokens(prompt),
+                output_tokens=_estimate_tokens(text),
+                source="estimated",
+            )
+        return ProviderResult(
+            text=text,
+            input_tokens=_as_nonnegative_int(getattr(usage, "prompt_tokens", 0)),
+            output_tokens=_as_nonnegative_int(getattr(usage, "completion_tokens", 0)),
+            source="provider_reported",
+        )
+
+
+class OpenRouterProvider(ModelProvider):
+    """Adapter for OpenRouter's OpenAI-compatible chat API."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        client: Any | None = None,
+        max_completion_tokens: int | None = None,
+    ) -> None:
+        settings = get_settings()
+        configured_api_key = (
+            settings.openrouter_api_key.get_secret_value()
+            if settings.openrouter_api_key
+            else None
+        )
+        resolved_api_key = api_key or configured_api_key
+        if client is None and not resolved_api_key:
+            raise RuntimeError(
+                "TEAMSWARM_OPENROUTER_API_KEY or OPENROUTER_API_KEY is required "
+                "when TEAMSWARM_PROVIDER_MODE=openrouter."
+            )
+        self.base_url = (base_url or settings.openrouter_base_url).rstrip("/")
+        default_headers = {"X-OpenRouter-Title": settings.openrouter_app_name}
+        if settings.openrouter_site_url:
+            default_headers["HTTP-Referer"] = settings.openrouter_site_url
+        self.client = client or AsyncOpenAI(
+            base_url=self.base_url,
+            api_key=resolved_api_key,
+            default_headers=default_headers,
+        )
+        self.max_completion_tokens = max(
+            1,
+            max_completion_tokens or settings.openrouter_max_completion_tokens,
+        )
+
+    async def generate(self, prompt: str, model: str) -> ProviderResult:
+        response = await self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=self.max_completion_tokens,
+        )
+        text = response.choices[0].message.content
+        if not isinstance(text, str):
+            raise RuntimeError("OpenRouter returned a response without text content.")
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return ProviderResult(
+                text=text,
+                input_tokens=_estimate_tokens(prompt),
+                output_tokens=_estimate_tokens(text),
+                source="estimated",
+            )
+        return ProviderResult(
+            text=text,
+            input_tokens=_as_nonnegative_int(getattr(usage, "prompt_tokens", 0)),
+            output_tokens=_as_nonnegative_int(getattr(usage, "completion_tokens", 0)),
             source="provider_reported",
         )
 
@@ -194,8 +326,12 @@ def _as_nonnegative_int(value: object) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
 
 
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
 async def get_model_catalog() -> list[AvailableModelRecord]:
-    """Return configured remote models and models actually installed in local Ollama."""
+    """Return configured remote models and models reported by local servers."""
     settings = get_settings()
     remote_profiles: dict[str, list[Literal["fast", "strong", "fallback"]]] = {}
     for profile, model in (
@@ -221,6 +357,20 @@ async def get_model_catalog() -> list[AvailableModelRecord]:
     ):
         sglang_profiles.setdefault(model, []).append(profile)  # type: ignore[arg-type]
     installed_sglang_models = await SGLangProvider(settings.sglang_base_url).list_models()
+    bytez_profiles: dict[str, list[Literal["fast", "strong", "fallback"]]] = {}
+    for profile, model in (
+        ("fast", settings.bytez_fast_model),
+        ("strong", settings.bytez_strong_model),
+        ("fallback", settings.bytez_fallback_model),
+    ):
+        bytez_profiles.setdefault(model, []).append(profile)  # type: ignore[arg-type]
+    openrouter_profiles: dict[str, list[Literal["fast", "strong", "fallback"]]] = {}
+    for profile, model in (
+        ("fast", settings.openrouter_fast_model),
+        ("strong", settings.openrouter_strong_model),
+        ("fallback", settings.openrouter_fallback_model),
+    ):
+        openrouter_profiles.setdefault(model, []).append(profile)  # type: ignore[arg-type]
 
     catalog = [
         AvailableModelRecord(
@@ -232,6 +382,26 @@ async def get_model_catalog() -> list[AvailableModelRecord]:
         )
         for model, profiles in remote_profiles.items()
     ]
+    catalog.extend(
+        AvailableModelRecord(
+            id=model,
+            provider="bytez",
+            location="remote",
+            availability="configured",
+            profiles=profiles,
+        )
+        for model, profiles in bytez_profiles.items()
+    )
+    catalog.extend(
+        AvailableModelRecord(
+            id=model,
+            provider="openrouter",
+            location="remote",
+            availability="configured",
+            profiles=profiles,
+        )
+        for model, profiles in openrouter_profiles.items()
+    )
     for model in sorted(set(installed_local_models) | set(local_profiles)):
         catalog.append(
             AvailableModelRecord(
@@ -263,6 +433,10 @@ def get_provider() -> ModelProvider:
         return OllamaProvider()
     if provider_mode == "sglang":
         return SGLangProvider()
+    if provider_mode == "bytez":
+        return BytezProvider()
+    if provider_mode == "openrouter":
+        return OpenRouterProvider()
     if provider_mode == "mock":
         return MockProvider()
     raise ValueError(f"Unsupported TEAMSWARM_PROVIDER_MODE: {provider_mode}")
